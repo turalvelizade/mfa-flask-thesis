@@ -7,6 +7,7 @@ import json
 import os
 import imaplib
 import email
+import threading
 
 import pyotp
 import qrcode
@@ -231,7 +232,7 @@ def mfa():
             session['method'] = 'email'
 
             send_email(user['email'], otp)
-            check_email_arrival(otp)
+            threading.Thread(target=check_email_arrival, args=(otp,)).start()
 
         elif method == 'totp':
             session['method'] = 'totp'
