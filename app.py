@@ -13,9 +13,11 @@ from twilio.rest import Client as TwilioClient
 import smtplib
 from email.mime.text import MIMEText
 
+# Create Flask app and load secret key from environment variable
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
 
+# Test user for the MFA experiment
 USERS = {
     'admin': {
         'password': 'admin',
@@ -24,20 +26,26 @@ USERS = {
     }
 }
 
+# Twilio configuration
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 TWILIO_FROM = os.getenv("TWILIO_FROM")
 
+# Email configuration
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
+# Local file used to store TOTP secrets
 SECRETS_FILE = 'totp_secrets.json'
 
-# Stores SMS send timestamps in memory using Twilio Message SID
+# In-memory tracking for SMS delivery callbacks
+# Key = Twilio Message SID
+# Value = {'sent_at': timestamp}
 sms_tracking = {}
 
 
 def load_secrets():
+    """Load saved TOTP secrets from file."""
     if os.path.exists(SECRETS_FILE):
         with open(SECRETS_FILE, 'r') as f:
             return json.load(f)
@@ -45,11 +53,13 @@ def load_secrets():
 
 
 def save_secrets(secrets):
+    """Save TOTP secrets to file."""
     with open(SECRETS_FILE, 'w') as f:
         json.dump(secrets, f)
 
 
 def get_totp_secret(username):
+    """Get existing TOTP secret for user or create a new one."""
     secrets = load_secrets()
     if username not in secrets:
         secrets[username] = pyotp.random_base32()
@@ -58,10 +68,18 @@ def get_totp_secret(username):
 
 
 def generate_otp():
+    """Generate a random 6-digit OTP."""
     return ''.join(random.choices(string.digits, k=6))
 
 
 def send_sms(phone, otp):
+    """
+    Send SMS via Twilio.
+    Measures:
+    - API submission time (app -> Twilio accepted request)
+    Stores:
+    - sent_at timestamp for later delivery callback comparison
+    """
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
     send_start = time.time()
@@ -76,35 +94,53 @@ def send_sms(phone, otp):
     send_end = time.time()
     send_duration_ms = round((send_end - send_start) * 1000, 2)
 
-    # Save the exact send time so we can later compare it with Twilio's delivered callback
     sms_tracking[message.sid] = {
         'sent_at': send_end
     }
 
-    print(f'[MEASUREMENT] SMS | SID: {message.sid} | send_duration: {send_duration_ms} ms')
+    print(
+        f'[MEASUREMENT] SMS | sid: {message.sid} | '
+        f'api_submission_time_ms: {send_duration_ms}'
+    )
 
-    return send_duration_ms
+    return send_duration_ms, message.sid
 
 
 @app.route('/twilio-status', methods=['POST'])
 def twilio_status():
+    """
+    Receive Twilio delivery status callbacks.
+    Important:
+    - This measures provider-confirmed delivery time
+    - It does NOT necessarily equal the exact moment the user saw the SMS
+    """
     message_sid = request.form.get('MessageSid')
     status = request.form.get('MessageStatus')
     now = time.time()
 
-    print(f'[CALLBACK] SID: {message_sid} | status: {status} | callback_time: {now}')
+    print(
+        f'[CALLBACK] SMS | sid: {message_sid} | '
+        f'status: {status} | callback_time: {now}'
+    )
 
-    # Calculate delivery time only when Twilio confirms the SMS is delivered
     if message_sid in sms_tracking and status == 'delivered':
         sent_at = sms_tracking[message_sid]['sent_at']
-        delivery_time_ms = round((now - sent_at) * 1000, 2)
+        provider_delivery_time_ms = round((now - sent_at) * 1000, 2)
 
-        print(f'[MEASUREMENT] SMS | SID: {message_sid} | delivery_time: {delivery_time_ms} ms')
+        print(
+            f'[MEASUREMENT] SMS | sid: {message_sid} | '
+            f'provider_delivery_time_ms: {provider_delivery_time_ms}'
+        )
 
     return '', 200
 
 
 def send_email(to_address, otp):
+    """
+    Send OTP via email using SMTP.
+    Measures:
+    - API submission time (app -> Gmail SMTP accepted request)
+    """
     t1 = time.time()
 
     msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
@@ -119,12 +155,13 @@ def send_email(to_address, otp):
 
     ms = round((time.time() - t1) * 1000, 2)
 
-    print(f'[MEASUREMENT] EMAIL | send_duration: {ms} ms')
+    print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms}')
 
     return ms
 
 
 def get_totp_qr(username):
+    """Generate a QR code for TOTP enrollment."""
     secret = get_totp_secret(username)
 
     uri = pyotp.TOTP(secret).provisioning_uri(
@@ -139,12 +176,14 @@ def get_totp_qr(username):
 
 
 def verify_totp_code(username, code):
+    """Verify the TOTP code entered by the user."""
     secret = get_totp_secret(username)
     return pyotp.TOTP(secret).verify(code, valid_window=1)
 
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
+    """Login page: verifies username/password before MFA step."""
     error = None
 
     if request.method == 'POST':
@@ -164,6 +203,10 @@ def login():
 
 @app.route('/mfa', methods=['GET', 'POST'])
 def mfa_select():
+    """
+    MFA selection page.
+    Starts the timing of the MFA process when the user chooses a method.
+    """
     if 'pending_user' not in session:
         return redirect(url_for('login'))
 
@@ -174,6 +217,9 @@ def mfa_select():
         username = session['pending_user']
         user = USERS[username]
 
+        # Store the moment the MFA process starts
+        session['mfa_start_ts'] = time.time()
+
         if method == 'sms':
             otp = generate_otp()
 
@@ -182,7 +228,9 @@ def mfa_select():
             session['method'] = 'sms'
 
             try:
-                send_sms(user['phone'], otp)
+                send_duration_ms, sid = send_sms(user['phone'], otp)
+                session['sms_sid'] = sid
+                session['sms_send_duration_ms'] = send_duration_ms
                 return redirect(url_for('mfa_verify'))
             except Exception as e:
                 error = f'SMS error: {e}'
@@ -195,7 +243,8 @@ def mfa_select():
             session['method'] = 'email'
 
             try:
-                send_email(user['email'], otp)
+                send_duration_ms = send_email(user['email'], otp)
+                session['email_send_duration_ms'] = send_duration_ms
                 return redirect(url_for('mfa_verify'))
             except Exception as e:
                 error = f'Email error: {e}'
@@ -213,6 +262,11 @@ def mfa_select():
 
 @app.route('/verify', methods=['GET', 'POST'])
 def mfa_verify():
+    """
+    MFA verification page.
+    Measures user completion time:
+    - time from MFA start to successful code entry
+    """
     if 'pending_user' not in session or 'method' not in session:
         return redirect(url_for('login'))
 
@@ -226,16 +280,34 @@ def mfa_verify():
         code = request.form.get('code', '').strip()
         ok = False
 
-        if method == 'totp':
-            ok = verify_totp_code(username, code)
-            print(f'[MEASUREMENT] TOTP | result: {"SUCCESS" if ok else "FAIL"}')
+        # This is the user-perceived completion metric
+        mfa_start_ts = session.get('mfa_start_ts', time.time())
 
-            if not ok:
+        if method == 'totp':
+            verify_start = time.perf_counter_ns()
+            ok = verify_totp_code(username, code)
+            verify_end = time.perf_counter_ns()
+
+            verification_processing_ms = round((verify_end - verify_start) / 1_000_000, 4)
+
+            if ok:
+                completion_time_ms = round((time.time() - mfa_start_ts) * 1000, 2)
+                print(
+                    f'[MEASUREMENT] TOTP | verification_processing_time_ms: {verification_processing_ms} | '
+                    f'user_completion_time_ms: {completion_time_ms} | result: SUCCESS'
+                )
+            else:
+                print(
+                    f'[MEASUREMENT] TOTP | verification_processing_time_ms: {verification_processing_ms} | '
+                    f'result: FAIL'
+                )
                 error = 'Invalid code. Check your authenticator app.'
 
         else:
             stored = session.get('otp')
             ts = session.get('otp_ts', 0)
+
+            verify_start = time.perf_counter_ns()
 
             if time.time() - ts > 300:
                 error = 'Code expired.'
@@ -244,7 +316,33 @@ def mfa_verify():
             else:
                 ok = True
 
-            print(f'[MEASUREMENT] {method.upper()} | result: {"SUCCESS" if ok else "FAIL"}')
+            verify_end = time.perf_counter_ns()
+            verification_processing_ms = round((verify_end - verify_start) / 1_000_000, 4)
+
+            if ok:
+                completion_time_ms = round((time.time() - mfa_start_ts) * 1000, 2)
+
+                if method == 'sms':
+                    print(
+                        f'[MEASUREMENT] SMS | verification_processing_time_ms: {verification_processing_ms} | '
+                        f'user_completion_time_ms: {completion_time_ms} | result: SUCCESS'
+                    )
+                elif method == 'email':
+                    print(
+                        f'[MEASUREMENT] EMAIL | verification_processing_time_ms: {verification_processing_ms} | '
+                        f'user_completion_time_ms: {completion_time_ms} | result: SUCCESS'
+                    )
+            else:
+                if method == 'sms':
+                    print(
+                        f'[MEASUREMENT] SMS | verification_processing_time_ms: {verification_processing_ms} | '
+                        f'result: FAIL'
+                    )
+                elif method == 'email':
+                    print(
+                        f'[MEASUREMENT] EMAIL | verification_processing_time_ms: {verification_processing_ms} | '
+                        f'result: FAIL'
+                    )
 
         if ok:
             session.clear()
@@ -257,6 +355,7 @@ def mfa_verify():
 
 @app.route('/dashboard')
 def dashboard():
+    """Protected page shown only after successful MFA."""
     if not session.get('mfa_ok'):
         return redirect(url_for('login'))
 
@@ -265,6 +364,7 @@ def dashboard():
 
 @app.route('/logout')
 def logout():
+    """Log user out and clear session."""
     session.clear()
     return redirect(url_for('login'))
 
