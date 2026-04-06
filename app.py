@@ -99,10 +99,11 @@ def twilio_status():
     return '', 200
 
 # ─────────────────────────────────────────────
-# Email (SMTP only, async)
+# Email (SMTP only, async, with API timing)
 # ─────────────────────────────────────────────
 
 def send_email(to_address, otp):
+    start = time.time()  # start timing
     msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
     msg['Subject'] = 'Your MFA code'
     msg['From'] = EMAIL_ADDRESS
@@ -111,7 +112,9 @@ def send_email(to_address, otp):
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
         s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         s.sendmail(EMAIL_ADDRESS, to_address, msg.as_string())
-    print(f'[EMAIL SENT] to {to_address} with OTP {otp}')
+
+    ms = round((time.time() - start) * 1000, 2)
+    print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms} | sent to {to_address} | OTP {otp}')
 
 def send_email_async(to_address, otp):
     threading.Thread(target=lambda: send_email(to_address, otp), daemon=True).start()
