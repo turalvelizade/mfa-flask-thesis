@@ -109,7 +109,7 @@ def twilio_status():
     return '', 200
 
 # ─────────────────────────────────────────────
-# EMAIL
+# EMAIL — uses SSL port 465 (works on Render)
 # ─────────────────────────────────────────────
 
 def send_email(to_address, otp):
@@ -118,8 +118,8 @@ def send_email(to_address, otp):
     msg['Subject'] = 'Your MFA code'
     msg['From']    = EMAIL_ADDRESS
     msg['To']      = to_address
-    with smtplib.SMTP('smtp.gmail.com', 587) as s:
-        s.starttls()
+    # Use SMTP_SSL on port 465 instead of STARTTLS on port 587
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
         s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         s.sendmail(EMAIL_ADDRESS, to_address, msg.as_string())
     ms = round((time.time() - start) * 1000, 2)
@@ -128,10 +128,6 @@ def send_email(to_address, otp):
     return ms
 
 def check_email_arrival(otp, timeout=120):
-    """
-    Poll inbox every 2 seconds until the OTP email appears or timeout.
-    Checks ALL emails (not just UNSEEN) to avoid missing already-seen ones.
-    """
     start = time.time()
     print(f'[IMAP] Starting to poll for OTP: {otp}')
 
@@ -141,21 +137,16 @@ def check_email_arrival(otp, timeout=120):
             mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             mail.select('inbox')
 
-            # Search ALL recent emails with matching subject (not just UNSEEN)
             status, messages = mail.search(None, '(SUBJECT "Your MFA code")')
 
             if status == 'OK' and messages[0]:
-                # Check most recent emails first (reverse order)
                 email_ids = messages[0].split()
-                for num in reversed(email_ids[-10:]):  # only check last 10
+                for num in reversed(email_ids[-10:]):
                     try:
                         status2, data = mail.fetch(num, '(RFC822)')
                         if status2 != 'OK':
                             continue
-
                         msg = email.message_from_bytes(data[0][1])
-
-                        # Extract body
                         body = ""
                         if msg.is_multipart():
                             for part in msg.walk():
@@ -171,7 +162,6 @@ def check_email_arrival(otp, timeout=120):
                             ms   = round((now - sent) * 1000, 2)
                             print(f'[MEASUREMENT] EMAIL | email_delivery_time_ms: {ms}')
                             mail.logout()
-                            # Clean up
                             email_tracking.pop(otp, None)
                             return ms
 
@@ -271,7 +261,6 @@ def verify():
             ok = verify_totp_code(username, code)
             if not ok:
                 error = 'Invalid code. Check your authenticator app.'
-
         else:
             if time.time() - session.get('otp_ts', 0) > 300:
                 error = 'Code expired. Go back and request a new one.'
