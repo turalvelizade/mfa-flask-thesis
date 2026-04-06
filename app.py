@@ -13,45 +13,42 @@ from twilio.rest import Client as TwilioClient
 import smtplib
 from email.mime.text import MIMEText
 
-# Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
 
-# Test user (for experiment purposes)
 USERS = {
     'admin': {
         'password': 'admin',
-        'email':    'mfatestingthesis@gmail.com',
-        'phone':    '+37126186263',
+        'email': 'mfatestingthesis@gmail.com',
+        'phone': '+37126186263',
     }
 }
 
-# Twilio configuration (from environment variables)
-TWILIO_SID   = os.getenv("TWILIO_SID")
+TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
-TWILIO_FROM  = os.getenv("TWILIO_FROM")
+TWILIO_FROM = os.getenv("TWILIO_FROM")
 
-# Email configuration
-EMAIL_ADDRESS  = os.getenv("EMAIL_ADDRESS")
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
-# File to store TOTP secrets
 SECRETS_FILE = 'totp_secrets.json'
 
+# Stores SMS send timestamps in memory using Twilio Message SID
+sms_tracking = {}
 
-# Load TOTP secrets from file
+
 def load_secrets():
     if os.path.exists(SECRETS_FILE):
         with open(SECRETS_FILE, 'r') as f:
             return json.load(f)
     return {}
 
-# Save TOTP secrets to file
+
 def save_secrets(secrets):
     with open(SECRETS_FILE, 'w') as f:
         json.dump(secrets, f)
 
-# Get or create TOTP secret for user
+
 def get_totp_secret(username):
     secrets = load_secrets()
     if username not in secrets:
@@ -60,18 +57,15 @@ def get_totp_secret(username):
     return secrets[username]
 
 
-# Generate random 6-digit OTP
 def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
 
-# Send SMS via Twilio + measure send time
 def send_sms(phone, otp):
-    t1 = time.time()
-
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
-    # IMPORTANT: Add status_callback for delivery tracking
+    send_start = time.time()
+
     message = client.messages.create(
         body=f'Your MFA code: {otp}',
         from_=TWILIO_FROM,
@@ -79,35 +73,44 @@ def send_sms(phone, otp):
         status_callback="https://mfa-flask-thesis.onrender.com/twilio-status"
     )
 
-    ms = round((time.time() - t1) * 1000, 2)
+    send_end = time.time()
+    send_duration_ms = round((send_end - send_start) * 1000, 2)
 
-    # Store send time for later comparison
-    print(f'[MEASUREMENT] SMS | send_duration: {ms} ms | SID: {message.sid}')
+    # Save the exact send time so we can later compare it with Twilio's delivered callback
+    sms_tracking[message.sid] = {
+        'sent_at': send_end
+    }
 
-    return ms
+    print(f'[MEASUREMENT] SMS | SID: {message.sid} | send_duration: {send_duration_ms} ms')
+
+    return send_duration_ms
 
 
-# Twilio callback endpoint (receives delivery updates)
 @app.route('/twilio-status', methods=['POST'])
 def twilio_status():
     message_sid = request.form.get('MessageSid')
     status = request.form.get('MessageStatus')
-
     now = time.time()
 
-    print(f'[CALLBACK] SID: {message_sid} | status: {status} | time: {now}')
+    print(f'[CALLBACK] SID: {message_sid} | status: {status} | callback_time: {now}')
+
+    # Calculate delivery time only when Twilio confirms the SMS is delivered
+    if message_sid in sms_tracking and status == 'delivered':
+        sent_at = sms_tracking[message_sid]['sent_at']
+        delivery_time_ms = round((now - sent_at) * 1000, 2)
+
+        print(f'[MEASUREMENT] SMS | SID: {message_sid} | delivery_time: {delivery_time_ms} ms')
 
     return '', 200
 
 
-# Send email OTP via SMTP + measure send time
 def send_email(to_address, otp):
     t1 = time.time()
 
     msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
     msg['Subject'] = 'Your MFA code'
-    msg['From']    = EMAIL_ADDRESS
-    msg['To']      = to_address
+    msg['From'] = EMAIL_ADDRESS
+    msg['To'] = to_address
 
     with smtplib.SMTP('smtp.gmail.com', 587) as s:
         s.starttls()
@@ -121,7 +124,6 @@ def send_email(to_address, otp):
     return ms
 
 
-# Generate QR code for TOTP setup
 def get_totp_qr(username):
     secret = get_totp_secret(username)
 
@@ -136,13 +138,11 @@ def get_totp_qr(username):
     return base64.b64encode(buf.getvalue()).decode()
 
 
-# Verify TOTP code
 def verify_totp_code(username, code):
     secret = get_totp_secret(username)
     return pyotp.TOTP(secret).verify(code, valid_window=1)
 
 
-# Login page
 @app.route('/', methods=['GET', 'POST'])
 def login():
     error = None
@@ -162,7 +162,6 @@ def login():
     return render_template('login.html', error=error)
 
 
-# MFA method selection
 @app.route('/mfa', methods=['GET', 'POST'])
 def mfa_select():
     if 'pending_user' not in session:
@@ -175,7 +174,6 @@ def mfa_select():
         username = session['pending_user']
         user = USERS[username]
 
-        # SMS method
         if method == 'sms':
             otp = generate_otp()
 
@@ -189,7 +187,6 @@ def mfa_select():
             except Exception as e:
                 error = f'SMS error: {e}'
 
-        # Email method
         elif method == 'email':
             otp = generate_otp()
 
@@ -203,7 +200,6 @@ def mfa_select():
             except Exception as e:
                 error = f'Email error: {e}'
 
-        # TOTP method
         elif method == 'totp':
             session['method'] = 'totp'
             get_totp_secret(username)
@@ -215,7 +211,6 @@ def mfa_select():
     return render_template('mfa_select.html', error=error)
 
 
-# OTP verification
 @app.route('/verify', methods=['GET', 'POST'])
 def mfa_verify():
     if 'pending_user' not in session or 'method' not in session:
@@ -233,7 +228,6 @@ def mfa_verify():
 
         if method == 'totp':
             ok = verify_totp_code(username, code)
-
             print(f'[MEASUREMENT] TOTP | result: {"SUCCESS" if ok else "FAIL"}')
 
             if not ok:
@@ -261,7 +255,6 @@ def mfa_verify():
     return render_template('mfa_verify.html', method=method, qr_b64=qr_b64, error=error)
 
 
-# Dashboard page
 @app.route('/dashboard')
 def dashboard():
     if not session.get('mfa_ok'):
@@ -270,13 +263,11 @@ def dashboard():
     return render_template('dashboard.html', username=session.get('user'))
 
 
-# Logout
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login'))
 
 
-# Run app locally
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
