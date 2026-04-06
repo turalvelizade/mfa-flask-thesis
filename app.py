@@ -5,10 +5,12 @@ import random
 import string
 import json
 import os
-
+import imaplib
+import email
+import threading
 import pyotp
 import qrcode
-from flask import Flask, render_template, request, session, redirect
+from flask import Flask, render_template, request, session, redirect, url_for
 from twilio.rest import Client as TwilioClient
 import smtplib
 from email.mime.text import MIMEText
@@ -16,29 +18,30 @@ from email.mime.text import MIMEText
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
 
+# Mock User Database
 USERS = {
     'admin': {
         'password': 'admin',
-        'email': 'turalvelizade011@gmail.com',
+        'email': 'tural.velizade.az@gmail.com',
         'phone': '+37126186263',
     }
 }
 
-TWILIO_SID   = os.getenv("TWILIO_SID")
+# Environment Variables for Services
+TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
-TWILIO_FROM  = os.getenv("TWILIO_FROM")
-
-EMAIL_ADDRESS  = os.getenv("EMAIL_ADDRESS")
+TWILIO_FROM = os.getenv("TWILIO_FROM")
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
+IMAP_PORT = int(os.getenv("IMAP_PORT", 993))
 
 SECRETS_FILE = 'totp_secrets.json'
-
 sms_tracking = {}
-
-twilio_client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
+email_tracking = {}
 
 # ─────────────────────────────────────────────
-# TOTP
+# TOTP (Time-based One-Time Password)
 # ─────────────────────────────────────────────
 
 def load_secrets():
@@ -69,195 +72,204 @@ def get_totp_qr(username):
     return base64.b64encode(buf.getvalue()).decode()
 
 # ─────────────────────────────────────────────
-# OTP
+# OTP Generation
 # ─────────────────────────────────────────────
 
 def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
 # ─────────────────────────────────────────────
-# SMS
+# SMS Logic (Twilio)
 # ─────────────────────────────────────────────
 
 def send_sms(phone, otp):
-    try:
-        start = time.time()
-
-        message = twilio_client.messages.create(
-            body=f'Your MFA code: {otp}',
-            from_=TWILIO_FROM,
-            to=phone,
-            status_callback="https://mfa-flask-thesis.onrender.com/twilio-status"
-        )
-
-        ms = round((time.time() - start) * 1000, 2)
-
-        sms_tracking[message.sid] = {'sent_at': time.time()}
-
-        print(f'[MEASUREMENT] SMS | api_submission_time_ms: {ms} | SUCCESS')
-
-        return True, ms, message.sid
-
-    except Exception as e:
-        print(f'[MEASUREMENT] SMS | FAILED | error: {e}')
-        return False, None, None
-
+    client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
+    start = time.time()
+    message = client.messages.create(
+        body=f'Your MFA code: {otp}',
+        from_=TWILIO_FROM,
+        to=phone,
+        status_callback="https://mfa-flask-thesis.onrender.com/twilio-status"
+    )
+    ms = round((time.time() - start) * 1000, 2)
+    sms_tracking[message.sid] = {'sent_at': time.time()}
+    print(f'[MEASUREMENT] SMS | sid: {message.sid} | api_submission_time_ms: {ms}')
+    return ms, message.sid
 
 @app.route('/twilio-status', methods=['POST'])
 def twilio_status():
-    sid    = request.form.get('MessageSid')
+    sid = request.form.get('MessageSid')
     status = request.form.get('MessageStatus')
-    now    = time.time()
-
+    now = time.time()
     print(f'[CALLBACK] SMS | sid: {sid} | status: {status}')
-
     if sid in sms_tracking and status == 'delivered':
         ms = round((now - sms_tracking[sid]['sent_at']) * 1000, 2)
         print(f'[MEASUREMENT] SMS | provider_delivery_time_ms: {ms}')
-
     return '', 200
 
 # ─────────────────────────────────────────────
-# EMAIL (FIXED)
+# EMAIL Logic (SMTP/IMAP)
 # ─────────────────────────────────────────────
 
 def send_email(to_address, otp):
     start = time.time()
+    msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
+    msg['Subject'] = 'Your MFA code'
+    msg['From'] = EMAIL_ADDRESS
+    msg['To'] = to_address
+    
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
+        s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        s.sendmail(EMAIL_ADDRESS, to_address, msg.as_string())
+    
+    ms = round((time.time() - start) * 1000, 2)
+    email_tracking[otp] = {'sent_at': time.time()}
+    print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms}')
+    return ms
 
-    try:
-        msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
-        msg['Subject'] = 'Your MFA code'
-        msg['From']    = EMAIL_ADDRESS
-        msg['To']      = to_address
-
-        # ✅ TIMEOUT ADDED HERE
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=5) as s:
-            s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            s.sendmail(EMAIL_ADDRESS, to_address, msg.as_string())
-
-        ms = round((time.time() - start) * 1000, 2)
-
-        print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms} | SUCCESS')
-
-        return True, ms
-
-    except Exception as e:
-        ms = round((time.time() - start) * 1000, 2)
-
-        print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms} | FAILED | error: {e}')
-
-        return False, ms
+def check_email_arrival(otp, timeout=120):
+    start = time.time()
+    print(f'[IMAP] Starting to poll for OTP: {otp}')
+    while time.time() - start < timeout:
+        try:
+            mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+            mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            mail.select('inbox')
+            status, messages = mail.search(None, '(SUBJECT "Your MFA code")')
+            
+            if status == 'OK' and messages[0]:
+                email_ids = messages[0].split()
+                for num in reversed(email_ids[-10:]):
+                    try:
+                        status2, data = mail.fetch(num, '(RFC822)')
+                        if status2 != 'OK': continue
+                        msg = email.message_from_bytes(data[0][1])
+                        
+                        body = ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                if part.get_content_type() == "text/plain":
+                                    body = part.get_payload(decode=True).decode(errors='ignore')
+                                    break
+                        else:
+                            body = msg.get_payload(decode=True).decode(errors='ignore')
+                        
+                        if otp in body:
+                            now = time.time()
+                            sent = email_tracking.get(otp, {}).get('sent_at', now)
+                            ms = round((now - sent) * 1000, 2)
+                            print(f'[MEASUREMENT] EMAIL | email_delivery_time_ms: {ms}')
+                            mail.logout()
+                            email_tracking.pop(otp, None)
+                            return ms
+                    except Exception as e:
+                        print(f'[IMAP] Error reading email: {e}')
+                        continue
+            mail.logout()
+        except Exception as e:
+            print(f'[IMAP] Connection error: {e}')
+        
+        time.sleep(2)
+    
+    print(f'[MEASUREMENT] EMAIL | email_delivery_time_ms: TIMEOUT (>{timeout}s)')
+    email_tracking.pop(otp, None)
+    return None
 
 # ─────────────────────────────────────────────
-# Routes
+# Flask Routes
 # ─────────────────────────────────────────────
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
     error = None
-
     if request.method == 'POST':
         u = request.form.get('username', '').strip()
         p = request.form.get('password', '').strip()
-
         if u in USERS and USERS[u]['password'] == p:
             session['pending_user'] = u
             return redirect('/mfa')
-
         error = 'Wrong username or password.'
-
     return render_template('login.html', error=error)
-
 
 @app.route('/mfa', methods=['GET', 'POST'])
 def mfa():
     if 'pending_user' not in session:
         return redirect('/')
-
+    
     error = None
-
     if request.method == 'POST':
         method = request.form.get('method')
-        user   = USERS[session['pending_user']]
+        user = USERS[session['pending_user']]
         session['mfa_start_ts'] = time.time()
-
+        
         if method == 'sms':
             otp = generate_otp()
-            session['otp']    = otp
+            session['otp'] = otp
             session['otp_ts'] = time.time()
             session['method'] = 'sms'
-
-            success, ms, sid = send_sms(user['phone'], otp)
-
-            if success:
+            try:
+                send_sms(user['phone'], otp)
                 return redirect('/verify')
-            else:
-                error = 'SMS failed. Try again.'
-
+            except Exception as e:
+                error = f'SMS error: {e}'
+                
         elif method == 'email':
             otp = generate_otp()
-            session['otp']    = otp
+            session['otp'] = otp
             session['otp_ts'] = time.time()
             session['method'] = 'email'
-
-            success, ms = send_email(user['email'], otp)
-
-            if success:
+            try:
+                send_email(user['email'], otp)
+                threading.Thread(target=check_email_arrival, args=(otp,), daemon=True).start()
                 return redirect('/verify')
-            else:
-                error = 'Email failed (SMTP/network issue). Try again.'
-
+            except Exception as e:
+                error = f'Email error: {e}'
+                
         elif method == 'totp':
             session['method'] = 'totp'
             get_totp_secret(session['pending_user'])
             return redirect('/verify')
-
         else:
             error = 'Please select a method.'
-
+            
     return render_template('mfa_select.html', error=error)
-
 
 @app.route('/verify', methods=['GET', 'POST'])
 def verify():
     if 'method' not in session:
         return redirect('/')
-
-    method   = session['method']
+    
+    method = session['method']
     username = session['pending_user']
-    qr       = get_totp_qr(username) if method == 'totp' else None
-    error    = None
-
+    qr = get_totp_qr(username) if method == 'totp' else None
+    error = None
+    
     if request.method == 'POST':
-        code  = request.form.get('code', '').strip()
-        ok    = False
+        code = request.form.get('code', '').strip()
+        ok = False
         start = session.get('mfa_start_ts', time.time())
-
+        
         if method == 'totp':
             ok = verify_totp_code(username, code)
             if not ok:
-                print('[MEASUREMENT] TOTP | FAILED')
-                error = 'Invalid code.'
+                error = 'Invalid code. Check your authenticator app.'
         else:
+            # Check for OTP expiration (5 mins)
             if time.time() - session.get('otp_ts', 0) > 300:
-                error = 'Code expired.'
+                error = 'Code expired. Go back and request a new one.'
             elif code == session.get('otp'):
                 ok = True
             else:
-                print(f'[MEASUREMENT] {method.upper()} | FAILED')
                 error = 'Wrong code.'
-
+        
         if ok:
             total = round((time.time() - start) * 1000, 2)
-
             print(f'[MEASUREMENT] {method.upper()} | user_completion_time_ms: {total} | SUCCESS')
-
             session.clear()
             session['mfa_ok'] = True
             return redirect('/dashboard')
-
+            
     return render_template('mfa_verify.html', method=method, qr_b64=qr, error=error)
-
 
 @app.route('/dashboard')
 def dashboard():
@@ -265,12 +277,10 @@ def dashboard():
         return redirect('/')
     return render_template('dashboard.html', username='admin')
 
-
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect('/')
-
 
 if __name__ == '__main__':
     app.run(debug=True)
