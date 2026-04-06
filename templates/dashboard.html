@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #fff; font-family: Arial, sans-serif; }
+    .wrap { width: 300px; margin: 120px auto; }
+    h2 { margin-bottom: 16px; font-size: 20px; }
+    p { font-size: 14px; color: #333; margin-bottom: 20px; }
+    a { font-size: 13px; color: #555; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>Dashboard</h2>
+    <p>Logged in as <strong>{{ username }}</strong>. MFA verified successfully.</p>
+    <a href="/logout">Logout</a>
+  </div>
+</body>
+</html>

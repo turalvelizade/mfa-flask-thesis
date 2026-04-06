@@ -1,0 +1,5 @@
+Flask
+pyotp
+qrcode[pil]
+twilio
+gunicorn
