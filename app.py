@@ -16,11 +16,9 @@ from twilio.rest import Client as TwilioClient
 import smtplib
 from email.mime.text import MIMEText
 
-# Create Flask app
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
 
-# Test user
 USERS = {
     'admin': {
         'password': 'admin',
@@ -29,27 +27,23 @@ USERS = {
     }
 }
 
-# Twilio config
-TWILIO_SID = os.getenv("TWILIO_SID")
+TWILIO_SID   = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
-TWILIO_FROM = os.getenv("TWILIO_FROM")
+TWILIO_FROM  = os.getenv("TWILIO_FROM")
 
-# Email config
-EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_ADDRESS  = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+IMAP_SERVER    = os.getenv("IMAP_SERVER", "imap.gmail.com")
+IMAP_PORT      = int(os.getenv("IMAP_PORT", 993))
 
-# IMAP config
-IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
-IMAP_PORT = int(os.getenv("IMAP_PORT", 993))
-
-# Files
 SECRETS_FILE = 'totp_secrets.json'
 
-# Tracking
-sms_tracking = {}
+sms_tracking   = {}
 email_tracking = {}
 
-# ---------------- TOTP ----------------
+# ─────────────────────────────────────────────
+# TOTP
+# ─────────────────────────────────────────────
 
 def load_secrets():
     if os.path.exists(SECRETS_FILE):
@@ -69,30 +63,28 @@ def get_totp_secret(username):
     return secrets[username]
 
 def verify_totp_code(username, code):
-    secret = get_totp_secret(username)
-    return pyotp.TOTP(secret).verify(code, valid_window=1)
+    return pyotp.TOTP(get_totp_secret(username)).verify(code, valid_window=1)
 
 def get_totp_qr(username):
     secret = get_totp_secret(username)
-    uri = pyotp.TOTP(secret).provisioning_uri(
-        name=username,
-        issuer_name='MFA Thesis'
-    )
-
+    uri = pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name='MFA Thesis')
     buf = io.BytesIO()
     qrcode.make(uri).save(buf, format='PNG')
     return base64.b64encode(buf.getvalue()).decode()
 
-# ---------------- OTP ----------------
+# ─────────────────────────────────────────────
+# OTP
+# ─────────────────────────────────────────────
 
 def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
-# ---------------- SMS ----------------
+# ─────────────────────────────────────────────
+# SMS
+# ─────────────────────────────────────────────
 
 def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
-
     start = time.time()
     message = client.messages.create(
         body=f'Your MFA code: {otp}',
@@ -100,56 +92,48 @@ def send_sms(phone, otp):
         to=phone,
         status_callback="https://mfa-flask-thesis.onrender.com/twilio-status"
     )
-    end = time.time()
-
-    ms = round((end - start) * 1000, 2)
-
-    sms_tracking[message.sid] = {'sent_at': end}
-
+    ms = round((time.time() - start) * 1000, 2)
+    sms_tracking[message.sid] = {'sent_at': time.time()}
     print(f'[MEASUREMENT] SMS | sid: {message.sid} | api_submission_time_ms: {ms}')
     return ms, message.sid
 
 @app.route('/twilio-status', methods=['POST'])
 def twilio_status():
-    sid = request.form.get('MessageSid')
+    sid    = request.form.get('MessageSid')
     status = request.form.get('MessageStatus')
-    now = time.time()
-
+    now    = time.time()
     print(f'[CALLBACK] SMS | sid: {sid} | status: {status}')
-
     if sid in sms_tracking and status == 'delivered':
-        sent = sms_tracking[sid]['sent_at']
-        ms = round((now - sent) * 1000, 2)
+        ms = round((now - sms_tracking[sid]['sent_at']) * 1000, 2)
         print(f'[MEASUREMENT] SMS | provider_delivery_time_ms: {ms}')
-
     return '', 200
 
-# ---------------- EMAIL ----------------
+# ─────────────────────────────────────────────
+# EMAIL
+# ─────────────────────────────────────────────
 
 def send_email(to_address, otp):
     start = time.time()
-
     msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
     msg['Subject'] = 'Your MFA code'
-    msg['From'] = EMAIL_ADDRESS
-    msg['To'] = to_address
-
+    msg['From']    = EMAIL_ADDRESS
+    msg['To']      = to_address
     with smtplib.SMTP('smtp.gmail.com', 587) as s:
         s.starttls()
         s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         s.sendmail(EMAIL_ADDRESS, to_address, msg.as_string())
-
-    send_time = time.time()
-    ms = round((send_time - start) * 1000, 2)
-
+    ms = round((time.time() - start) * 1000, 2)
+    email_tracking[otp] = {'sent_at': time.time()}
     print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms}')
-
-    email_tracking[otp] = {'sent_at': send_time}
-
     return ms
 
-def check_email_arrival(otp, timeout=60):
+def check_email_arrival(otp, timeout=120):
+    """
+    Poll inbox every 2 seconds until the OTP email appears or timeout.
+    Checks ALL emails (not just UNSEEN) to avoid missing already-seen ones.
+    """
     start = time.time()
+    print(f'[IMAP] Starting to poll for OTP: {otp}')
 
     while time.time() - start < timeout:
         try:
@@ -157,130 +141,167 @@ def check_email_arrival(otp, timeout=60):
             mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             mail.select('inbox')
 
-            status, messages = mail.search(None, '(UNSEEN SUBJECT "Your MFA code")')
+            # Search ALL recent emails with matching subject (not just UNSEEN)
+            status, messages = mail.search(None, '(SUBJECT "Your MFA code")')
 
-            if status == 'OK':
-                for num in messages[0].split():
-                    status, data = mail.fetch(num, '(RFC822)')
-                    msg = email.message_from_bytes(data[0][1])
+            if status == 'OK' and messages[0]:
+                # Check most recent emails first (reverse order)
+                email_ids = messages[0].split()
+                for num in reversed(email_ids[-10:]):  # only check last 10
+                    try:
+                        status2, data = mail.fetch(num, '(RFC822)')
+                        if status2 != 'OK':
+                            continue
 
-                    body = ""
-                    if msg.is_multipart():
-                        for part in msg.walk():
-                            if part.get_content_type() == "text/plain":
-                                body = part.get_payload(decode=True).decode()
-                    else:
-                        body = msg.get_payload(decode=True).decode()
+                        msg = email.message_from_bytes(data[0][1])
 
-                    if otp in body:
-                        now = time.time()
-                        sent = email_tracking[otp]['sent_at']
-                        ms = round((now - sent) * 1000, 2)
+                        # Extract body
+                        body = ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                if part.get_content_type() == "text/plain":
+                                    body = part.get_payload(decode=True).decode(errors='ignore')
+                                    break
+                        else:
+                            body = msg.get_payload(decode=True).decode(errors='ignore')
 
-                        print(f'[MEASUREMENT] EMAIL | email_delivery_time_ms: {ms}')
+                        if otp in body:
+                            now  = time.time()
+                            sent = email_tracking.get(otp, {}).get('sent_at', now)
+                            ms   = round((now - sent) * 1000, 2)
+                            print(f'[MEASUREMENT] EMAIL | email_delivery_time_ms: {ms}')
+                            mail.logout()
+                            # Clean up
+                            email_tracking.pop(otp, None)
+                            return ms
 
-                        mail.logout()
-                        return ms
+                    except Exception as e:
+                        print(f'[IMAP] Error reading email: {e}')
+                        continue
 
             mail.logout()
 
         except Exception as e:
-            print(f'[ERROR] IMAP: {e}')
+            print(f'[IMAP] Connection error: {e}')
 
         time.sleep(2)
 
-    print('[MEASUREMENT] EMAIL | email_delivery_time_ms: TIMEOUT')
+    print(f'[MEASUREMENT] EMAIL | email_delivery_time_ms: TIMEOUT (>{timeout}s)')
+    email_tracking.pop(otp, None)
     return None
 
-# ---------------- ROUTES ----------------
+# ─────────────────────────────────────────────
+# Routes
+# ─────────────────────────────────────────────
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
+    error = None
     if request.method == 'POST':
-        u = request.form.get('username')
-        p = request.form.get('password')
-
+        u = request.form.get('username', '').strip()
+        p = request.form.get('password', '').strip()
         if u in USERS and USERS[u]['password'] == p:
             session['pending_user'] = u
             return redirect('/mfa')
+        error = 'Wrong username or password.'
+    return render_template('login.html', error=error)
 
-    return render_template('login.html')
 
 @app.route('/mfa', methods=['GET', 'POST'])
 def mfa():
     if 'pending_user' not in session:
         return redirect('/')
 
+    error = None
     if request.method == 'POST':
         method = request.form.get('method')
-        user = USERS[session['pending_user']]
-
+        user   = USERS[session['pending_user']]
         session['mfa_start_ts'] = time.time()
 
         if method == 'sms':
             otp = generate_otp()
-            session['otp'] = otp
+            session['otp']    = otp
             session['otp_ts'] = time.time()
             session['method'] = 'sms'
-
-            send_sms(user['phone'], otp)
+            try:
+                send_sms(user['phone'], otp)
+                return redirect('/verify')
+            except Exception as e:
+                error = f'SMS error: {e}'
 
         elif method == 'email':
             otp = generate_otp()
-            session['otp'] = otp
+            session['otp']    = otp
             session['otp_ts'] = time.time()
             session['method'] = 'email'
-
-            send_email(user['email'], otp)
-            threading.Thread(target=check_email_arrival, args=(otp,)).start()
+            try:
+                send_email(user['email'], otp)
+                threading.Thread(target=check_email_arrival, args=(otp,), daemon=True).start()
+                return redirect('/verify')
+            except Exception as e:
+                error = f'Email error: {e}'
 
         elif method == 'totp':
             session['method'] = 'totp'
             get_totp_secret(session['pending_user'])
+            return redirect('/verify')
 
-        return redirect('/verify')
+        else:
+            error = 'Please select a method.'
 
-    return render_template('mfa_select.html')
+    return render_template('mfa_select.html', error=error)
+
 
 @app.route('/verify', methods=['GET', 'POST'])
 def verify():
     if 'method' not in session:
         return redirect('/')
 
-    method = session['method']
+    method   = session['method']
     username = session['pending_user']
-
-    qr = get_totp_qr(username) if method == 'totp' else None
+    qr       = get_totp_qr(username) if method == 'totp' else None
+    error    = None
 
     if request.method == 'POST':
-        code = request.form.get('code')
-        ok = False
-
-        start = session['mfa_start_ts']
+        code  = request.form.get('code', '').strip()
+        ok    = False
+        start = session.get('mfa_start_ts', time.time())
 
         if method == 'totp':
             ok = verify_totp_code(username, code)
+            if not ok:
+                error = 'Invalid code. Check your authenticator app.'
+
         else:
-            if time.time() - session['otp_ts'] < 300 and code == session['otp']:
+            if time.time() - session.get('otp_ts', 0) > 300:
+                error = 'Code expired. Go back and request a new one.'
+            elif code == session.get('otp'):
                 ok = True
+            else:
+                error = 'Wrong code.'
 
         if ok:
             total = round((time.time() - start) * 1000, 2)
             print(f'[MEASUREMENT] {method.upper()} | user_completion_time_ms: {total} | SUCCESS')
-
             session.clear()
             session['mfa_ok'] = True
             return redirect('/dashboard')
 
-    return render_template('mfa_verify.html', method=method, qr_b64=qr)
+    return render_template('mfa_verify.html', method=method, qr_b64=qr, error=error)
+
 
 @app.route('/dashboard')
 def dashboard():
     if not session.get('mfa_ok'):
         return redirect('/')
-    return "Logged in!"
+    return render_template('dashboard.html', username='admin')
 
-# ---------------- RUN ----------------
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/')
+
 
 if __name__ == '__main__':
     app.run(debug=True)
