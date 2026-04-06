@@ -22,7 +22,7 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
 USERS = {
     'admin': {
         'password': 'admin',
-        'email': 'tural.velizade.az@gmail.com',
+        'email': 'turalvelizade011@gmail.com',
         'phone': '+37126186263',
     }
 }
