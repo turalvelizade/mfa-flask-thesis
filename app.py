@@ -81,9 +81,10 @@ def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
     body = f'Your MFA code: {otp}'
-    size_bytes = len(body.encode())  # bandwidth
+    size_bytes = len(body.encode())
 
     start = time.time()
+
     message = client.messages.create(
         body=body,
         from_=TWILIO_FROM,
@@ -91,13 +92,13 @@ def send_sms(phone, otp):
         status_callback="https://mfa-flask-thesis.onrender.com/twilio-status"
     )
 
-    ms = round((time.time() - start) * 1000, 2)
+    api_time = round((time.time() - start) * 1000, 2)
 
     sms_tracking[message.sid] = {'sent_at': time.time()}
 
-    print(f'[MEASUREMENT] SMS | api_submission_time_ms: {ms} | size_bytes: {size_bytes}')
+    print(f'[MEASUREMENT] SMS | api_submission_time_ms: {api_time} | size_bytes: {size_bytes}')
 
-    return ms, message.sid
+    return api_time, message.sid
 
 @app.route('/twilio-status', methods=['POST'])
 def twilio_status():
@@ -108,43 +109,41 @@ def twilio_status():
     print(f'[CALLBACK] SMS | sid: {sid} | status: {status}')
 
     if sid in sms_tracking and status == 'delivered':
-        ms = round((now - sms_tracking[sid]['sent_at']) * 1000, 2)
-        print(f'[MEASUREMENT] SMS | provider_delivery_time_ms: {ms}')
+        delivery_time = round((now - sms_tracking[sid]['sent_at']) * 1000, 2)
+        print(f'[MEASUREMENT] SMS | provider_delivery_time_ms: {delivery_time}')
 
     return '', 200
 
 # ─────────────────────────────────────────────
-# Email (SMTP async + measurements)
+# EMAIL (Stable + Measured)
 # ─────────────────────────────────────────────
 
 def send_email(to_address, otp):
     try:
-        start = time.time()
-
         msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
         msg['Subject'] = 'Your MFA code'
         msg['From'] = EMAIL_ADDRESS
         msg['To'] = to_address
 
-        # bandwidth (payload size)
-        size_bytes = len(msg.as_string().encode())
+        raw_msg = msg.as_string()
+        size_bytes = len(raw_msg.encode())
+
+        start = time.time()
 
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
             s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            s.sendmail(EMAIL_ADDRESS, to_address, msg.as_string())
+            s.sendmail(EMAIL_ADDRESS, to_address, raw_msg)
 
-        ms = round((time.time() - start) * 1000, 2)
+        api_time = round((time.time() - start) * 1000, 2)
 
-        print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms} | size_bytes: {size_bytes}')
-        print(f'[EMAIL SENT] to {to_address} with OTP {otp}')
+        print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {api_time} | size_bytes: {size_bytes}')
+        print(f'[EMAIL SENT] to {to_address}')
 
     except Exception as e:
         print(f'[EMAIL ERROR] {e}')
 
 def send_email_async(to_address, otp):
-    def target():
-        send_email(to_address, otp)
-    threading.Thread(target=target, daemon=True).start()
+    threading.Thread(target=lambda: send_email(to_address, otp), daemon=True).start()
 
 # ─────────────────────────────────────────────
 # Flask Routes
