@@ -165,7 +165,7 @@ def mfa():
             session['otp']    = otp
             session['otp_ts'] = time.time()
             session['method'] = 'email'
-            send_email_async(user['email'], otp)
+            send_email(user["email"], otp)
             return redirect('/verify')
 
         elif method == 'totp':
