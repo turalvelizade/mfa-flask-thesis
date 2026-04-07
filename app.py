@@ -79,68 +79,39 @@ def generate_otp():
 
 def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
-
-    body = f'Your MFA code: {otp}'
-    size_bytes = len(body.encode())
-
     start = time.time()
-
     message = client.messages.create(
-        body=body,
+        body=f'Your MFA code: {otp}',
         from_=TWILIO_FROM,
         to=phone,
         status_callback="https://mfa-flask-thesis.onrender.com/twilio-status"
     )
-
-    api_time = round((time.time() - start) * 1000, 2)
-
+    ms = round((time.time() - start) * 1000, 2)
     sms_tracking[message.sid] = {'sent_at': time.time()}
-
-    print(f'[MEASUREMENT] SMS | api_submission_time_ms: {api_time} | size_bytes: {size_bytes}')
-
-    return api_time, message.sid
+    print(f'[MEASUREMENT] SMS | sid: {message.sid} | api_submission_time_ms: {ms}')
+    return ms, message.sid
 
 @app.route('/twilio-status', methods=['POST'])
 def twilio_status():
     sid = request.form.get('MessageSid')
     status = request.form.get('MessageStatus')
-    now = time.time()
-
     print(f'[CALLBACK] SMS | sid: {sid} | status: {status}')
-
-    if sid in sms_tracking and status == 'delivered':
-        delivery_time = round((now - sms_tracking[sid]['sent_at']) * 1000, 2)
-        print(f'[MEASUREMENT] SMS | provider_delivery_time_ms: {delivery_time}')
-
     return '', 200
 
 # ─────────────────────────────────────────────
-# EMAIL (Stable + Measured)
+# Email (SMTP only, async)
 # ─────────────────────────────────────────────
 
 def send_email(to_address, otp):
-    try:
-        msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
-        msg['Subject'] = 'Your MFA code'
-        msg['From'] = EMAIL_ADDRESS
-        msg['To'] = to_address
+    msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
+    msg['Subject'] = 'Your MFA code'
+    msg['From'] = EMAIL_ADDRESS
+    msg['To'] = to_address
 
-        raw_msg = msg.as_string()
-        size_bytes = len(raw_msg.encode())
-
-        start = time.time()
-
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
-            s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            s.sendmail(EMAIL_ADDRESS, to_address, raw_msg)
-
-        api_time = round((time.time() - start) * 1000, 2)
-
-        print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {api_time} | size_bytes: {size_bytes}')
-        print(f'[EMAIL SENT] to {to_address}')
-
-    except Exception as e:
-        print(f'[EMAIL ERROR] {e}')
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
+        s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        s.sendmail(EMAIL_ADDRESS, to_address, msg.as_string())
+    print(f'[EMAIL SENT] to {to_address} with OTP {otp}')
 
 def send_email_async(to_address, otp):
     threading.Thread(target=lambda: send_email(to_address, otp), daemon=True).start()
@@ -220,6 +191,7 @@ def verify():
             if not ok:
                 error = 'Invalid code. Check your authenticator app.'
         else:
+            # Check for OTP expiration (5 mins)
             if time.time() - session.get('otp_ts', 0) > 300:
                 error = 'Code expired. Go back and request a new one.'
             elif code == session.get('otp'):
