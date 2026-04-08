@@ -10,8 +10,8 @@ import pyotp
 import qrcode
 from flask import Flask, render_template, request, session, redirect
 from twilio.rest import Client as TwilioClient
-import smtplib
-from email.mime.text import MIMEText
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
@@ -30,7 +30,7 @@ TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 TWILIO_FROM = os.getenv("TWILIO_FROM")
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 
 SECRETS_FILE = 'totp_secrets.json'
 sms_tracking = {}
@@ -99,19 +99,26 @@ def twilio_status():
     return '', 200
 
 # ─────────────────────────────────────────────
-# Email (SMTP only, async)
+# Email (SendGrid)
 # ─────────────────────────────────────────────
 
 def send_email(to_address, otp):
-    msg = MIMEText(f'Your MFA code: {otp}\n\nExpires in 5 minutes.')
-    msg['Subject'] = 'Your MFA code'
-    msg['From'] = EMAIL_ADDRESS
-    msg['To'] = to_address
+    start = time.time()
 
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
-        s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-        s.sendmail(EMAIL_ADDRESS, to_address, msg.as_string())
-    print(f'[EMAIL SENT] to {to_address} with OTP {otp}')
+    message = Mail(
+        from_email=EMAIL_ADDRESS,
+        to_emails=to_address,
+        subject='Your MFA code',
+        plain_text_content=f'Your MFA code: {otp}\n\nExpires in 5 minutes.'
+    )
+
+    sg = SendGridAPIClient(SENDGRID_API_KEY)
+    response = sg.send(message)
+
+    ms = round((time.time() - start) * 1000, 2)
+    print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms} | status_code: {response.status_code}')
+
+    return ms
 
 def send_email_async(to_address, otp):
     threading.Thread(target=lambda: send_email(to_address, otp), daemon=True).start()
@@ -191,7 +198,6 @@ def verify():
             if not ok:
                 error = 'Invalid code. Check your authenticator app.'
         else:
-            # Check for OTP expiration (5 mins)
             if time.time() - session.get('otp_ts', 0) > 300:
                 error = 'Code expired. Go back and request a new one.'
             elif code == session.get('otp'):
