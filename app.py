@@ -11,7 +11,7 @@ import qrcode
 from flask import Flask, render_template, request, session, redirect
 from twilio.rest import Client as TwilioClient
 from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+from sendgrid.helpers.mail import Mail, From
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
@@ -35,9 +35,7 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SECRETS_FILE = 'totp_secrets.json'
 sms_tracking = {}
 
-# ─────────────────────────────────────────────
 # TOTP
-# ─────────────────────────────────────────────
 
 def load_secrets():
     if os.path.exists(SECRETS_FILE):
@@ -66,16 +64,12 @@ def get_totp_qr(username):
     qrcode.make(uri).save(buf, format='PNG')
     return base64.b64encode(buf.getvalue()).decode()
 
-# ─────────────────────────────────────────────
 # OTP Generation
-# ─────────────────────────────────────────────
 
 def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
-# ─────────────────────────────────────────────
 # SMS (Twilio)
-# ─────────────────────────────────────────────
 
 def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
@@ -98,18 +92,28 @@ def twilio_status():
     print(f'[CALLBACK] SMS | sid: {sid} | status: {status}')
     return '', 200
 
-# ─────────────────────────────────────────────
 # Email (SendGrid)
-# ─────────────────────────────────────────────
 
 def send_email(to_address, otp):
     start = time.time()
 
+    email_body = f"""Hello,
+
+Your verification code is: {otp}
+
+This code will expire in 5 minutes.
+
+If you did not request this code, you can safely ignore this message.
+
+Best regards,
+MFA Testing System
+"""
+
     message = Mail(
-        from_email=EMAIL_ADDRESS,
+        from_email=From(EMAIL_ADDRESS, "MFA Testing System"),
         to_emails=to_address,
-        subject='Your MFA code',
-        plain_text_content=f'Your MFA code: {otp}\n\nExpires in 5 minutes.'
+        subject='Your verification code',
+        plain_text_content=email_body
     )
 
     sg = SendGridAPIClient(SENDGRID_API_KEY)
@@ -123,9 +127,7 @@ def send_email(to_address, otp):
 def send_email_async(to_address, otp):
     threading.Thread(target=lambda: send_email(to_address, otp), daemon=True).start()
 
-# ─────────────────────────────────────────────
 # Flask Routes
-# ─────────────────────────────────────────────
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
@@ -166,8 +168,11 @@ def mfa():
             session['otp'] = otp
             session['otp_ts'] = time.time()
             session['method'] = 'email'
-            send_email_async(user['email'], otp)
-            return redirect('/verify')
+            try:
+                send_email_async(user['email'], otp)
+                return redirect('/verify')
+            except Exception as e:
+                error = f'Email error: {e}'
                 
         elif method == 'totp':
             session['method'] = 'totp'
