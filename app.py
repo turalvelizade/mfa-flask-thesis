@@ -5,7 +5,7 @@ import random
 import string
 import json
 import os
-import threading
+import hmac
 import pyotp
 import qrcode
 from flask import Flask, render_template, request, session, redirect
@@ -35,7 +35,9 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SECRETS_FILE = 'totp_secrets.json'
 sms_tracking = {}
 
+# ----------------------------
 # TOTP
+# ----------------------------
 
 def load_secrets():
     if os.path.exists(SECRETS_FILE):
@@ -64,24 +66,34 @@ def get_totp_qr(username):
     qrcode.make(uri).save(buf, format='PNG')
     return base64.b64encode(buf.getvalue()).decode()
 
+# ----------------------------
 # OTP Generation
+# ----------------------------
 
 def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
+# ----------------------------
 # SMS (Twilio)
+# ----------------------------
 
 def send_sms(phone, otp):
+    if not TWILIO_SID or not TWILIO_TOKEN or not TWILIO_FROM:
+        raise ValueError("Twilio environment variables are missing.")
+
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
     start = time.time()
+
     message = client.messages.create(
         body=f'Your MFA code: {otp}',
         from_=TWILIO_FROM,
         to=phone,
         status_callback="https://mfa-flask-thesis.onrender.com/twilio-status"
     )
+
     ms = round((time.time() - start) * 1000, 2)
     sms_tracking[message.sid] = {'sent_at': time.time()}
+
     print(f'[MEASUREMENT] SMS | sid: {message.sid} | api_submission_time_ms: {ms}')
     return ms, message.sid
 
@@ -92,9 +104,16 @@ def twilio_status():
     print(f'[CALLBACK] SMS | sid: {sid} | status: {status}')
     return '', 200
 
+# ----------------------------
 # Email (SendGrid)
+# ----------------------------
 
 def send_email(to_address, otp):
+    if not SENDGRID_API_KEY:
+        raise ValueError("SENDGRID_API_KEY is missing.")
+    if not EMAIL_ADDRESS:
+        raise ValueError("EMAIL_ADDRESS is missing.")
+
     start = time.time()
 
     email_body = f"""Hello,
@@ -120,103 +139,125 @@ MFA Testing System
     response = sg.send(message)
 
     ms = round((time.time() - start) * 1000, 2)
+
     print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms} | status_code: {response.status_code}')
+    print(f'[SENDGRID] headers: {dict(response.headers)}')
+    print(f'[SENDGRID] body: {response.body}')
 
-    return ms
+    return ms, response.status_code
 
-def send_email_async(to_address, otp):
-    threading.Thread(target=lambda: send_email(to_address, otp), daemon=True).start()
-
+# ----------------------------
 # Flask Routes
+# ----------------------------
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
     error = None
+
     if request.method == 'POST':
         u = request.form.get('username', '').strip()
         p = request.form.get('password', '').strip()
+
         if u in USERS and USERS[u]['password'] == p:
             session['pending_user'] = u
             return redirect('/mfa')
+
         error = 'Wrong username or password.'
+
     return render_template('login.html', error=error)
 
 @app.route('/mfa', methods=['GET', 'POST'])
 def mfa():
     if 'pending_user' not in session:
         return redirect('/')
-    
+
     error = None
+
     if request.method == 'POST':
         method = request.form.get('method')
         user = USERS[session['pending_user']]
         session['mfa_start_ts'] = time.time()
-        
+
         if method == 'sms':
             otp = generate_otp()
             session['otp'] = otp
             session['otp_ts'] = time.time()
             session['method'] = 'sms'
+
             try:
-                send_sms(user['phone'], otp)
+                ms, sid = send_sms(user['phone'], otp)
+                print(f'[INFO] SMS requested successfully | sid: {sid} | time_ms: {ms}')
                 return redirect('/verify')
             except Exception as e:
+                session.pop('otp', None)
+                session.pop('otp_ts', None)
+                session.pop('method', None)
                 error = f'SMS error: {e}'
-                
+
         elif method == 'email':
             otp = generate_otp()
             session['otp'] = otp
             session['otp_ts'] = time.time()
             session['method'] = 'email'
+
             try:
-                send_email_async(user['email'], otp)
+                ms, status_code = send_email(user['email'], otp)
+                print(f'[INFO] EMAIL requested successfully | status_code: {status_code} | time_ms: {ms}')
                 return redirect('/verify')
             except Exception as e:
+                session.pop('otp', None)
+                session.pop('otp_ts', None)
+                session.pop('method', None)
                 error = f'Email error: {e}'
-                
+
         elif method == 'totp':
             session['method'] = 'totp'
             get_totp_secret(session['pending_user'])
             return redirect('/verify')
+
         else:
             error = 'Please select a method.'
-            
+
     return render_template('mfa_select.html', error=error)
 
 @app.route('/verify', methods=['GET', 'POST'])
 def verify():
-    if 'method' not in session:
+    if 'method' not in session or 'pending_user' not in session:
         return redirect('/')
-    
+
     method = session['method']
     username = session['pending_user']
     qr = get_totp_qr(username) if method == 'totp' else None
     error = None
-    
+
     if request.method == 'POST':
         code = request.form.get('code', '').strip()
         ok = False
         start = session.get('mfa_start_ts', time.time())
-        
+
         if method == 'totp':
             ok = verify_totp_code(username, code)
             if not ok:
                 error = 'Invalid code. Check your authenticator app.'
         else:
-            if time.time() - session.get('otp_ts', 0) > 300:
+            otp_ts = session.get('otp_ts', 0)
+            stored_otp = session.get('otp', '')
+
+            if time.time() - otp_ts > 300:
                 error = 'Code expired. Go back and request a new one.'
-            elif code == session.get('otp'):
+            elif hmac.compare_digest(code, stored_otp):
                 ok = True
             else:
                 error = 'Wrong code.'
-        
+
         if ok:
             total = round((time.time() - start) * 1000, 2)
             print(f'[MEASUREMENT] {method.upper()} | user_completion_time_ms: {total} | SUCCESS')
+
             session.clear()
             session['mfa_ok'] = True
             return redirect('/dashboard')
-            
+
     return render_template('mfa_verify.html', method=method, qr_b64=qr, error=error)
 
 @app.route('/dashboard')
