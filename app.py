@@ -6,12 +6,13 @@ import string
 import json
 import os
 import threading
+import smtplib
+from email.message import EmailMessage
+
 import pyotp
 import qrcode
 from flask import Flask, render_template, request, session, redirect
 from twilio.rest import Client as TwilioClient
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail, From
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
@@ -29,8 +30,12 @@ USERS = {
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 TWILIO_FROM = os.getenv("TWILIO_FROM")
-EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+
+# Gmail SMTP
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")          # your gmail address
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # 16-char Google app password
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 
 SECRETS_FILE = 'totp_secrets.json'
 sms_tracking = {}
@@ -78,7 +83,7 @@ def send_sms(phone, otp):
         body=f'Your MFA code: {otp}',
         from_=TWILIO_FROM,
         to=phone,
-        status_callback="https://mfa-flask-thesis.onrender.com/twilio-status"
+        status_callback=os.getenv("TWILIO_STATUS_CALLBACK_URL", "")
     )
     ms = round((time.time() - start) * 1000, 2)
     sms_tracking[message.sid] = {'sent_at': time.time()}
@@ -92,7 +97,7 @@ def twilio_status():
     print(f'[CALLBACK] SMS | sid: {sid} | status: {status}')
     return '', 200
 
-# Email (SendGrid)
+# Email (Gmail SMTP)
 
 def send_email(to_address, otp):
     start = time.time()
@@ -109,23 +114,28 @@ Best regards,
 MFA Testing System
 """
 
-    message = Mail(
-        from_email=From(EMAIL_ADDRESS, "MFA Testing System"),
-        to_emails=to_address,
-        subject='Your verification code',
-        plain_text_content=email_body
-    )
+    msg = EmailMessage()
+    msg["Subject"] = "Your verification code"
+    msg["From"] = EMAIL_ADDRESS
+    msg["To"] = to_address
+    msg.set_content(email_body)
 
-    sg = SendGridAPIClient(SENDGRID_API_KEY)
-    response = sg.send(message)
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+        server.send_message(msg)
 
     ms = round((time.time() - start) * 1000, 2)
-    print(f'[MEASUREMENT] EMAIL | api_submission_time_ms: {ms} | status_code: {response.status_code}')
-
+    print(f'[MEASUREMENT] EMAIL | smtp_submission_time_ms: {ms} | recipient: {to_address}')
     return ms
 
 def send_email_async(to_address, otp):
-    threading.Thread(target=lambda: send_email(to_address, otp), daemon=True).start()
+    def worker():
+        try:
+            send_email(to_address, otp)
+        except Exception as e:
+            print(f'[ERROR] EMAIL | {e}')
+    threading.Thread(target=worker, daemon=True).start()
 
 # Flask Routes
 
@@ -145,13 +155,13 @@ def login():
 def mfa():
     if 'pending_user' not in session:
         return redirect('/')
-    
+
     error = None
     if request.method == 'POST':
         method = request.form.get('method')
         user = USERS[session['pending_user']]
         session['mfa_start_ts'] = time.time()
-        
+
         if method == 'sms':
             otp = generate_otp()
             session['otp'] = otp
@@ -162,7 +172,7 @@ def mfa():
                 return redirect('/verify')
             except Exception as e:
                 error = f'SMS error: {e}'
-                
+
         elif method == 'email':
             otp = generate_otp()
             session['otp'] = otp
@@ -173,31 +183,31 @@ def mfa():
                 return redirect('/verify')
             except Exception as e:
                 error = f'Email error: {e}'
-                
+
         elif method == 'totp':
             session['method'] = 'totp'
             get_totp_secret(session['pending_user'])
             return redirect('/verify')
         else:
             error = 'Please select a method.'
-            
+
     return render_template('mfa_select.html', error=error)
 
 @app.route('/verify', methods=['GET', 'POST'])
 def verify():
     if 'method' not in session:
         return redirect('/')
-    
+
     method = session['method']
     username = session['pending_user']
     qr = get_totp_qr(username) if method == 'totp' else None
     error = None
-    
+
     if request.method == 'POST':
         code = request.form.get('code', '').strip()
         ok = False
         start = session.get('mfa_start_ts', time.time())
-        
+
         if method == 'totp':
             ok = verify_totp_code(username, code)
             if not ok:
@@ -209,14 +219,14 @@ def verify():
                 ok = True
             else:
                 error = 'Wrong code.'
-        
+
         if ok:
             total = round((time.time() - start) * 1000, 2)
             print(f'[MEASUREMENT] {method.upper()} | user_completion_time_ms: {total} | SUCCESS')
             session.clear()
             session['mfa_ok'] = True
             return redirect('/dashboard')
-            
+
     return render_template('mfa_verify.html', method=method, qr_b64=qr, error=error)
 
 @app.route('/dashboard')
