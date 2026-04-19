@@ -13,10 +13,11 @@ import qrcode
 from flask import Flask, render_template, request, session, redirect
 from twilio.rest import Client as TwilioClient
 
+# created the Flask app and set the secret key from env or fallback to dev default
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
 
-# Mock User Database
+# hardcoded a single test user with email and phone for MFA testing
 USERS = {
     'admin': {
         'password': 'admin',
@@ -25,7 +26,7 @@ USERS = {
     }
 }
 
-# Environment Variables
+# loaded all external service credentials from environment variables
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 TWILIO_FROM = os.getenv("TWILIO_FROM")
@@ -36,13 +37,12 @@ EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 
+# used a JSON file to persist TOTP secrets across restarts, and a dict to track SMS delivery
 SECRETS_FILE = 'totp_secrets.json'
 sms_tracking = {}
 
 
-# ---------------------------
-# Helper logging function
-# ---------------------------
+# structured all log output with key=value pairs so it's easy to parse or grep later
 def log_event(event_type, method=None, result=None, reason=None, **kwargs):
     parts = [f"event={event_type}"]
     if method:
@@ -56,19 +56,19 @@ def log_event(event_type, method=None, result=None, reason=None, **kwargs):
     print("[MEASUREMENT] " + " | ".join(parts))
 
 
-# ---------------------------
-# TOTP
-# ---------------------------
+# loaded TOTP secrets from disk so they survive between restarts
 def load_secrets():
     if os.path.exists(SECRETS_FILE):
         with open(SECRETS_FILE, 'r') as f:
             return json.load(f)
     return {}
 
+# saved updated secrets back to disk after any new user is registered
 def save_secrets(secrets):
     with open(SECRETS_FILE, 'w') as f:
         json.dump(secrets, f)
 
+# generated a new TOTP secret for first-time users and saved it, or returned the existing one
 def get_totp_secret(username):
     secrets = load_secrets()
     if username not in secrets:
@@ -76,9 +76,11 @@ def get_totp_secret(username):
         save_secrets(secrets)
     return secrets[username]
 
+# verified the submitted TOTP code with a ±1 window to handle slight clock drift
 def verify_totp_code(username, code):
     return pyotp.TOTP(get_totp_secret(username)).verify(code, valid_window=1)
 
+# generated a QR code as a base64 PNG so the template can embed it directly in an <img> tag
 def get_totp_qr(username):
     secret = get_totp_secret(username)
     uri = pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name='MFA Thesis')
@@ -87,20 +89,17 @@ def get_totp_qr(username):
     return base64.b64encode(buf.getvalue()).decode()
 
 
-# ---------------------------
-# OTP Generation
-# ---------------------------
+# generated a 6-digit numeric OTP for SMS and email methods
 def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
 
-# ---------------------------
-# SMS (Twilio)
-# ---------------------------
+# sent the OTP via Twilio SMS and measured how long the API submission took
 def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
     start = time.time()
 
+    # included a status callback URL so Twilio can notify us when delivery is confirmed
     message = client.messages.create(
         body=f'Your MFA code: {otp}',
         from_=TWILIO_FROM,
@@ -109,6 +108,7 @@ def send_sms(phone, otp):
     )
 
     ms = round((time.time() - start) * 1000, 2)
+    # stored the message SID and sent timestamp so we can match it with the callback later
     sms_tracking[message.sid] = {
         'sent_at': time.time(),
         'status': 'submitted'
@@ -124,6 +124,7 @@ def send_sms(phone, otp):
     return ms, message.sid
 
 
+# received Twilio delivery status updates and updated our in-memory tracking dict
 @app.route('/twilio-status', methods=['POST'])
 def twilio_status():
     sid = request.form.get('MessageSid')
@@ -142,12 +143,11 @@ def twilio_status():
     return '', 200
 
 
-# ---------------------------
-# Email (Gmail SMTP)
-# ---------------------------
+# sent the OTP via Gmail SMTP using app password auth and measured delivery time
 def send_email(to_address, otp):
     start = time.time()
 
+    # wrote a plain-text email body with expiry notice and a safety message for unexpected codes
     email_body = f"""Hello,
 
 Your verification code is: {otp}
@@ -167,6 +167,7 @@ MFA Testing System
     msg.set_content(email_body)
 
     try:
+        # used STARTTLS to upgrade the connection before logging in
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
             server.starttls()
             server.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
@@ -193,9 +194,7 @@ MFA Testing System
         raise
 
 
-# ---------------------------
-# Flask Routes
-# ---------------------------
+# handled login form submission and redirected to MFA on success
 @app.route('/', methods=['GET', 'POST'])
 def login():
     error = None
@@ -203,6 +202,7 @@ def login():
         u = request.form.get('username', '').strip()
         p = request.form.get('password', '').strip()
 
+        # stored the username in session so the MFA step knows who is authenticating
         if u in USERS and USERS[u]['password'] == p:
             session['pending_user'] = u
             return redirect('/mfa')
@@ -218,6 +218,7 @@ def login():
     return render_template('login.html', error=error)
 
 
+# presented the MFA method selection and triggered OTP sending or TOTP setup
 @app.route('/mfa', methods=['GET', 'POST'])
 def mfa():
     if 'pending_user' not in session:
@@ -229,6 +230,7 @@ def mfa():
         method = request.form.get('method')
         username = session['pending_user']
         user = USERS[username]
+        # saved the MFA start timestamp so we can measure total completion time later
         session['mfa_start_ts'] = time.time()
 
         log_event(
@@ -278,6 +280,7 @@ def mfa():
 
         elif method == 'totp':
             session['method'] = 'totp'
+            # called get_totp_secret here to ensure the secret is generated before the verify page loads
             get_totp_secret(username)
 
             log_event(
@@ -300,6 +303,7 @@ def mfa():
     return render_template('mfa_select.html', error=error)
 
 
+# handled code verification for all three MFA methods and measured completion time
 @app.route('/verify', methods=['GET', 'POST'])
 def verify():
     if 'method' not in session or 'pending_user' not in session:
@@ -307,6 +311,7 @@ def verify():
 
     method = session['method']
     username = session['pending_user']
+    # only generated the QR code when the method is TOTP, passed None otherwise
     qr = get_totp_qr(username) if method == 'totp' else None
     error = None
 
@@ -327,6 +332,7 @@ def verify():
                 )
 
         else:
+            # checked expiry first before comparing the code to avoid timing issues
             if time.time() - session.get('otp_ts', 0) > 300:
                 error = 'Code expired. Go back and request a new one.'
                 log_event(
@@ -354,6 +360,7 @@ def verify():
                 result="success",
                 user_completion_time_ms=total
             )
+            # cleared the session and set mfa_ok so only verified users can reach the dashboard
             session.clear()
             session['mfa_ok'] = True
             return redirect('/dashboard')
@@ -361,6 +368,7 @@ def verify():
     return render_template('mfa_verify.html', method=method, qr_b64=qr, error=error)
 
 
+# protected the dashboard so only users who completed MFA can access it
 @app.route('/dashboard')
 def dashboard():
     if not session.get('mfa_ok'):
@@ -368,6 +376,7 @@ def dashboard():
     return render_template('dashboard.html', username='admin')
 
 
+# cleared the entire session on logout and sent the user back to the login page
 @app.route('/logout')
 def logout():
     session.clear()
