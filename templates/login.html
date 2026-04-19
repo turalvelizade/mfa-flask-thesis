@@ -3,23 +3,32 @@
 <head>
   <title>Login</title>
   <style>
+    /* reset all default spacing and used border-box sizing across every element */
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    /* set a white background and a clean sans-serif font for the whole page */
     body { background: #fff; font-family: Arial, sans-serif; }
+    /* centered the content block and pushed it down from the top with a fixed margin */
     .wrap { width: 300px; margin: 120px auto; }
     h2 { margin-bottom: 24px; font-size: 20px; }
+    /* styled labels as block elements so they stack above their inputs */
     label { display: block; font-size: 13px; margin-bottom: 4px; color: #333; }
+    /* made inputs full-width with consistent padding and a subtle border */
     input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 14px; margin-bottom: 14px; }
+    /* styled the submit button dark with a hover state to indicate interactivity */
     button { width: 100%; padding: 9px; background: #222; color: #fff; border: none; border-radius: 3px; font-size: 14px; cursor: pointer; }
     button:hover { background: #444; }
+    /* displayed error messages in red below the heading */
     .error { color: red; font-size: 13px; margin-bottom: 12px; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h2>Login</h2>
+    <!-- showed the error message passed from the Flask route if credentials were wrong -->
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     <form method="post">
       <label>Username</label>
+      <!-- autofocused the username field so the user can start typing immediately -->
       <input type="text" name="username" autofocus required>
       <label>Password</label>
       <input type="password" name="password" required>
