@@ -47,6 +47,12 @@ MFA_PAYLOAD_KB = int(os.getenv("MFA_PAYLOAD_KB", "0"))
 TEST_PROFILE = os.getenv("TEST_PROFILE", "baseline")
 SHOW_TOTP_QR = os.getenv("SHOW_TOTP_QR", "false").lower() == "true"
 
+# IMPORTANT:
+# Store this in Railway variables so the TOTP secret survives redeploys.
+# Example Railway variable:
+# TOTP_SECRET_ADMIN=SY6C34OQ5C3E2EQRXBKSW2JRXB34HSK5
+TOTP_SECRET_ADMIN = os.getenv("TOTP_SECRET_ADMIN")
+
 SECRETS_FILE = "totp_secrets.json"
 sms_tracking = {}
 
@@ -72,7 +78,7 @@ def log_event(event_type, method=None, result=None, reason=None, **kwargs):
     for k, v in kwargs.items():
         parts.append(f"{k}={v}")
 
-    print("[MEASUREMENT] " + " | ".join(parts))
+    print("[MEASUREMENT] " + " | ".join(parts), flush=True)
 
 
 def generate_payload():
@@ -85,8 +91,11 @@ def generate_payload():
 
 def load_secrets():
     if os.path.exists(SECRETS_FILE):
-        with open(SECRETS_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(SECRETS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
 
@@ -96,6 +105,17 @@ def save_secrets(secrets):
 
 
 def get_totp_secret(username):
+    """
+    TOTP secret priority:
+    1. Railway environment variable for admin user
+    2. totp_secrets.json fallback
+    3. generate new fallback secret if no secret exists
+
+    This fixes the issue where Railway redeploys can lose or reset local JSON data.
+    """
+    if username == "admin" and TOTP_SECRET_ADMIN:
+        return TOTP_SECRET_ADMIN
+
     secrets = load_secrets()
 
     if username not in secrets:
@@ -106,11 +126,15 @@ def get_totp_secret(username):
 
 
 def verify_totp_code(username, code):
-    return pyotp.TOTP(get_totp_secret(username)).verify(code, valid_window=1)
+    secret = get_totp_secret(username)
+    totp = pyotp.TOTP(secret)
+
+    return totp.verify(code, valid_window=1)
 
 
 def get_totp_qr(username):
     secret = get_totp_secret(username)
+
     uri = pyotp.TOTP(secret).provisioning_uri(
         name=username,
         issuer_name="MFA Thesis"
@@ -137,11 +161,13 @@ def generate_otp():
 def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
-    # Artificial delay simulates external communication delay
+    # Artificial delay simulates external communication delay.
+    # This delay is included in total authentication time,
+    # but not included in Twilio API submission time.
     if MFA_ARTIFICIAL_DELAY > 0:
         time.sleep(MFA_ARTIFICIAL_DELAY)
 
-    # This measures only Twilio API submission time
+    # This measures only Twilio API submission time.
     start = time.time()
 
     message = client.messages.create(
@@ -193,11 +219,13 @@ def twilio_status():
 # ---------------------------
 
 def send_email(to_address, otp):
-    # Artificial delay simulates external communication delay
+    # Artificial delay simulates external communication delay.
+    # This delay is included in total authentication time,
+    # but not included in SMTP submission time.
     if MFA_ARTIFICIAL_DELAY > 0:
         time.sleep(MFA_ARTIFICIAL_DELAY)
 
-    # This measures only SMTP submission time
+    # This measures only SMTP submission time.
     start = time.time()
 
     email_body = f"""Hello,
@@ -340,13 +368,17 @@ def mfa():
 
         elif method == "totp":
             session["method"] = "totp"
+
+            # Ensures the TOTP secret exists.
+            # If TOTP_SECRET_ADMIN is set in Railway, it will use that stable secret.
             get_totp_secret(username)
 
             log_event(
                 event_type="totp_ready",
                 method="totp",
                 result="ready",
-                username=username
+                username=username,
+                totp_secret_source="env" if (username == "admin" and TOTP_SECRET_ADMIN) else "file"
             )
 
             return redirect("/verify")
@@ -372,8 +404,9 @@ def verify():
     method = session["method"]
     username = session["pending_user"]
 
-    # QR is only shown when SHOW_TOTP_QR=true
-    # During experiments keep SHOW_TOTP_QR=false
+    # QR is only shown when SHOW_TOTP_QR=true.
+    # During experiments keep SHOW_TOTP_QR=false.
+    # The secret still exists through TOTP_SECRET_ADMIN or totp_secrets.json.
     qr = get_totp_qr(username) if method == "totp" and SHOW_TOTP_QR else None
 
     error = None
