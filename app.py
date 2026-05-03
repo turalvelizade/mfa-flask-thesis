@@ -47,10 +47,7 @@ MFA_PAYLOAD_KB = int(os.getenv("MFA_PAYLOAD_KB", "0"))
 TEST_PROFILE = os.getenv("TEST_PROFILE", "baseline")
 SHOW_TOTP_QR = os.getenv("SHOW_TOTP_QR", "false").lower() == "true"
 
-# IMPORTANT:
-# Store this in Railway variables so the TOTP secret survives redeploys.
-# Example Railway variable:
-# TOTP_SECRET_ADMIN=SY6C34OQ5C3E2EQRXBKSW2JRXB34HSK5
+# Stable TOTP secret for Railway deployment
 TOTP_SECRET_ADMIN = os.getenv("TOTP_SECRET_ADMIN")
 
 SECRETS_FILE = "totp_secrets.json"
@@ -110,8 +107,6 @@ def get_totp_secret(username):
     1. Railway environment variable for admin user
     2. totp_secrets.json fallback
     3. generate new fallback secret if no secret exists
-
-    This fixes the issue where Railway redeploys can lose or reset local JSON data.
     """
     if username == "admin" and TOTP_SECRET_ADMIN:
         return TOTP_SECRET_ADMIN
@@ -128,7 +123,6 @@ def get_totp_secret(username):
 def verify_totp_code(username, code):
     secret = get_totp_secret(username)
     totp = pyotp.TOTP(secret)
-
     return totp.verify(code, valid_window=1)
 
 
@@ -162,7 +156,7 @@ def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
     # Artificial delay simulates external communication delay.
-    # This delay is included in total authentication time,
+    # This delay is included in full MFA time,
     # but not included in Twilio API submission time.
     if MFA_ARTIFICIAL_DELAY > 0:
         time.sleep(MFA_ARTIFICIAL_DELAY)
@@ -220,7 +214,7 @@ def twilio_status():
 
 def send_email(to_address, otp):
     # Artificial delay simulates external communication delay.
-    # This delay is included in total authentication time,
+    # This delay is included in full MFA time,
     # but not included in SMTP submission time.
     if MFA_ARTIFICIAL_DELAY > 0:
         time.sleep(MFA_ARTIFICIAL_DELAY)
@@ -288,6 +282,7 @@ def login():
         p = request.form.get("password", "").strip()
 
         if u in USERS and USERS[u]["password"] == p:
+            session.clear()
             session["pending_user"] = u
             return redirect("/mfa")
 
@@ -315,7 +310,9 @@ def mfa():
         username = session["pending_user"]
         user = USERS[username]
 
+        # Start of the MFA workflow
         session["mfa_start_ts"] = time.time()
+        session["dashboard_loaded_logged"] = False
 
         log_event(
             event_type="mfa_start",
@@ -369,8 +366,6 @@ def mfa():
         elif method == "totp":
             session["method"] = "totp"
 
-            # Ensures the TOTP secret exists.
-            # If TOTP_SECRET_ADMIN is set in Railway, it will use that stable secret.
             get_totp_secret(username)
 
             log_event(
@@ -406,7 +401,6 @@ def verify():
 
     # QR is only shown when SHOW_TOTP_QR=true.
     # During experiments keep SHOW_TOTP_QR=false.
-    # The secret still exists through TOTP_SECRET_ADMIN or totp_secrets.json.
     qr = get_totp_qr(username) if method == "totp" and SHOW_TOTP_QR else None
 
     error = None
@@ -454,17 +448,23 @@ def verify():
                 )
 
         if ok:
-            total = round((time.time() - start) * 1000, 2)
+            # This is NOT the full browser workflow.
+            # This measures only until server-side MFA verification succeeds.
+            verification_time = round((time.time() - start) * 1000, 2)
+
+            session["mfa_ok"] = True
+            session["verified_user"] = username
+            session["verified_method"] = method
+            session["mfa_verification_time_ms"] = verification_time
+            session["mfa_verified_ts"] = time.time()
+            session["dashboard_loaded_logged"] = False
 
             log_event(
-                event_type="mfa_complete",
+                event_type="mfa_verified",
                 method=method,
                 result="success",
-                user_completion_time_ms=total
+                mfa_verification_time_ms=verification_time
             )
-
-            session.clear()
-            session["mfa_ok"] = True
 
             return redirect("/dashboard")
 
@@ -485,7 +485,36 @@ def dashboard():
     if not session.get("mfa_ok"):
         return redirect("/")
 
-    return render_template("dashboard.html", username="admin")
+    username = session.get("verified_user", "admin")
+    return render_template("dashboard.html", username=username)
+
+
+@app.route("/dashboard-loaded", methods=["POST"])
+def dashboard_loaded():
+    if not session.get("mfa_ok"):
+        return "", 204
+
+    # Prevent duplicate logs if user refreshes dashboard
+    if session.get("dashboard_loaded_logged"):
+        return "", 204
+
+    start = session.get("mfa_start_ts")
+    method = session.get("verified_method")
+
+    if start:
+        full_workflow_time = round((time.time() - start) * 1000, 2)
+
+        log_event(
+            event_type="full_workflow_complete",
+            method=method,
+            result="success",
+            mfa_verification_time_ms=session.get("mfa_verification_time_ms"),
+            full_workflow_time_ms=full_workflow_time
+        )
+
+        session["dashboard_loaded_logged"] = True
+
+    return "", 204
 
 
 @app.route("/logout")
