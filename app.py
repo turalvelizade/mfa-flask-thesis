@@ -53,6 +53,9 @@ TOTP_SECRET_ADMIN = os.getenv("TOTP_SECRET_ADMIN")
 SECRETS_FILE = "totp_secrets.json"
 sms_tracking = {}
 
+# Cached payload so every request uses the same fixed payload
+PAYLOAD_CACHE = None
+
 
 # ---------------------------
 # Logging and payload helpers
@@ -79,7 +82,28 @@ def log_event(event_type, method=None, result=None, reason=None, **kwargs):
 
 
 def generate_payload():
-    return "A" * (MFA_PAYLOAD_KB * 1024)
+    """
+    Generates a fixed random-looking payload.
+
+    Important:
+    - Do NOT use repeated characters like "A" * size.
+    - Repeated characters compress heavily over HTTPS/web servers.
+    - This fixed alphanumeric payload is harder to compress and gives
+      more realistic transferred data for bandwidth experiments.
+    """
+    global PAYLOAD_CACHE
+
+    if MFA_PAYLOAD_KB <= 0:
+        return ""
+
+    if PAYLOAD_CACHE is None:
+        rng = random.Random(12345)
+        chars = string.ascii_letters + string.digits
+        PAYLOAD_CACHE = "".join(
+            rng.choices(chars, k=MFA_PAYLOAD_KB * 1024)
+        )
+
+    return PAYLOAD_CACHE
 
 
 # ---------------------------
