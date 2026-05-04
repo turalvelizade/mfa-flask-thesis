@@ -6,11 +6,12 @@ import string
 import json
 import os
 import smtplib
+import secrets
 from email.message import EmailMessage
 
 import pyotp
 import qrcode
-from flask import Flask, render_template, request, session, redirect
+from flask import Flask, render_template, request, session, redirect, Response
 from twilio.rest import Client as TwilioClient
 
 
@@ -53,12 +54,9 @@ TOTP_SECRET_ADMIN = os.getenv("TOTP_SECRET_ADMIN")
 SECRETS_FILE = "totp_secrets.json"
 sms_tracking = {}
 
-# Cached payload so every request uses the same fixed payload
-PAYLOAD_CACHE = None
-
 
 # ---------------------------
-# Logging and payload helpers
+# Logging helpers
 # ---------------------------
 
 def log_event(event_type, method=None, result=None, reason=None, **kwargs):
@@ -79,31 +77,6 @@ def log_event(event_type, method=None, result=None, reason=None, **kwargs):
         parts.append(f"{k}={v}")
 
     print("[MEASUREMENT] " + " | ".join(parts), flush=True)
-
-
-def generate_payload():
-    """
-    Generates a fixed random-looking payload.
-
-    Important:
-    - Do NOT use repeated characters like "A" * size.
-    - Repeated characters compress heavily over HTTPS/web servers.
-    - This fixed alphanumeric payload is harder to compress and gives
-      more realistic transferred data for bandwidth experiments.
-    """
-    global PAYLOAD_CACHE
-
-    if MFA_PAYLOAD_KB <= 0:
-        return ""
-
-    if PAYLOAD_CACHE is None:
-        rng = random.Random(12345)
-        chars = string.ascii_letters + string.digits
-        PAYLOAD_CACHE = "".join(
-            rng.choices(chars, k=MFA_PAYLOAD_KB * 1024)
-        )
-
-    return PAYLOAD_CACHE
 
 
 # ---------------------------
@@ -170,6 +143,51 @@ def get_totp_qr(username):
 
 def generate_otp():
     return "".join(random.choices(string.digits, k=6))
+
+
+# ---------------------------
+# Controlled binary payload route
+# ---------------------------
+
+@app.route("/payload.bin")
+def payload_bin():
+    """
+    Sends a random binary payload for bandwidth/reliability experiments.
+
+    This is better than hidden HTML text because:
+    - repeated text compresses heavily,
+    - binary random data is harder to compress,
+    - it appears clearly as a separate request in DevTools/Wireshark,
+    - cache is disabled.
+    """
+    if MFA_PAYLOAD_KB <= 0:
+        return Response(b"", mimetype="application/octet-stream")
+
+    payload_size_bytes = MFA_PAYLOAD_KB * 1024
+    data = secrets.token_bytes(payload_size_bytes)
+
+    response = Response(data, mimetype="application/octet-stream")
+
+    # Try to prevent caching
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+    # Avoid browser interpreting the content
+    response.headers["Content-Disposition"] = "inline"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+
+    # Informative header for experiment
+    response.headers["X-Test-Payload-KB"] = str(MFA_PAYLOAD_KB)
+    response.headers["X-Test-Profile"] = TEST_PROFILE
+
+    log_event(
+        event_type="payload_served",
+        result="success",
+        payload_bytes=payload_size_bytes
+    )
+
+    return response
 
 
 # ---------------------------
@@ -497,7 +515,6 @@ def verify():
         method=method,
         qr_b64=qr,
         error=error,
-        payload=generate_payload(),
         profile=TEST_PROFILE,
         payload_kb=MFA_PAYLOAD_KB,
         artificial_delay_s=MFA_ARTIFICIAL_DELAY
