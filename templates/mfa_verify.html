@@ -59,8 +59,20 @@
       background: #444;
     }
 
+    button:disabled,
+    input:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
     .error {
       color: red;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    .loading {
+      color: #777;
       font-size: 13px;
       margin-bottom: 12px;
     }
@@ -100,29 +112,77 @@
       {% endif %}
     {% endif %}
 
+    {% if payload_kb and payload_kb > 0 %}
+      <p id="payloadStatus" class="loading">
+        Loading test payload... Please wait.
+      </p>
+    {% endif %}
+
     {% if error %}
       <p class="error">{{ error }}</p>
     {% endif %}
 
     <form method="post">
       <label>6-digit code</label>
-      <input type="text" name="code" maxlength="6" inputmode="numeric" autofocus required>
-      <button type="submit">Verify</button>
+      <input
+        id="codeInput"
+        type="text"
+        name="code"
+        maxlength="6"
+        inputmode="numeric"
+        autofocus
+        required
+        disabled
+      >
+      <button id="verifyButton" type="submit" disabled>Verify</button>
     </form>
 
     <a href="/mfa">← Choose different method</a>
   </div>
 
-  {% if payload_kb and payload_kb > 0 %}
-    <!--
-      Controlled binary payload for bandwidth/reliability experiments.
-      The random query value prevents browser caching.
-    -->
-    <img
-      src="/payload.bin?method={{ method }}&profile={{ profile }}&t={{ range(100000, 999999) | random }}"
-      style="display:none;"
-      alt=""
-    >
-  {% endif %}
+  <script>
+    async function loadPayloadThenEnableForm() {
+      const input = document.getElementById("codeInput");
+      const button = document.getElementById("verifyButton");
+      const status = document.getElementById("payloadStatus");
+
+      const payloadKb = Number("{{ payload_kb or 0 }}");
+
+      if (payloadKb <= 0) {
+        input.disabled = false;
+        button.disabled = false;
+        input.focus();
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          "/payload.bin?method={{ method }}&profile={{ profile }}&t=" + Date.now(),
+          {
+            method: "GET",
+            cache: "no-store"
+          }
+        );
+
+        const buffer = await response.arrayBuffer();
+
+        if (status) {
+          status.textContent = "Test payload loaded: " + Math.round(buffer.byteLength / 1024) + " KB";
+        }
+
+        input.disabled = false;
+        button.disabled = false;
+        input.focus();
+
+      } catch (err) {
+        if (status) {
+          status.textContent = "Payload loading failed. Please reload the page.";
+          status.style.color = "red";
+        }
+      }
+    }
+
+    window.addEventListener("load", loadPayloadThenEnableForm);
+  </script>
 </body>
 </html>
