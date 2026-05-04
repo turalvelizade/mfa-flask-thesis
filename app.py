@@ -56,7 +56,7 @@ sms_tracking = {}
 
 
 # ---------------------------
-# Logging helpers
+# Logging helper
 # ---------------------------
 
 def log_event(event_type, method=None, result=None, reason=None, **kwargs):
@@ -154,38 +154,29 @@ def payload_bin():
     """
     Sends a random binary payload for bandwidth/reliability experiments.
 
-    This is better than hidden HTML text because:
-    - repeated text compresses heavily,
-    - binary random data is harder to compress,
-    - it appears clearly as a separate request in DevTools/Wireshark,
-    - cache is disabled.
+    The browser downloads this file before the code input is enabled.
+    This makes the payload visible in DevTools/Wireshark more reliably.
     """
     if MFA_PAYLOAD_KB <= 0:
         return Response(b"", mimetype="application/octet-stream")
 
     payload_size_bytes = MFA_PAYLOAD_KB * 1024
+
+    # Random binary data is difficult to compress
     data = secrets.token_bytes(payload_size_bytes)
 
     response = Response(data, mimetype="application/octet-stream")
 
-    # Try to prevent caching
+    # Prevent browser/proxy caching
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
 
-    # Avoid browser interpreting the content
-    response.headers["Content-Disposition"] = "inline"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-
-    # Informative header for experiment
+    # Add size/config headers for checking in DevTools
+    response.headers["Content-Length"] = str(payload_size_bytes)
     response.headers["X-Test-Payload-KB"] = str(MFA_PAYLOAD_KB)
     response.headers["X-Test-Profile"] = TEST_PROFILE
-
-    log_event(
-        event_type="payload_served",
-        result="success",
-        payload_bytes=payload_size_bytes
-    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
 
     return response
 
@@ -198,7 +189,7 @@ def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
     # Artificial delay simulates external communication delay.
-    # This delay is included in full MFA time,
+    # This delay is included in full MFA workflow time,
     # but not included in Twilio API submission time.
     if MFA_ARTIFICIAL_DELAY > 0:
         time.sleep(MFA_ARTIFICIAL_DELAY)
@@ -256,7 +247,7 @@ def twilio_status():
 
 def send_email(to_address, otp):
     # Artificial delay simulates external communication delay.
-    # This delay is included in full MFA time,
+    # This delay is included in full MFA workflow time,
     # but not included in SMTP submission time.
     if MFA_ARTIFICIAL_DELAY > 0:
         time.sleep(MFA_ARTIFICIAL_DELAY)
@@ -490,8 +481,7 @@ def verify():
                 )
 
         if ok:
-            # This is NOT the full browser workflow.
-            # This measures only until server-side MFA verification succeeds.
+            # Server-side MFA verification time
             verification_time = round((time.time() - start) * 1000, 2)
 
             session["mfa_ok"] = True
