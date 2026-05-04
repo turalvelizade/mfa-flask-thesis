@@ -71,12 +71,6 @@
       margin-bottom: 12px;
     }
 
-    .loading {
-      color: #777;
-      font-size: 13px;
-      margin-bottom: 12px;
-    }
-
     img {
       display: block;
       margin: 10px 0 14px 0;
@@ -112,12 +106,6 @@
       {% endif %}
     {% endif %}
 
-    {% if payload_kb and payload_kb > 0 %}
-      <p id="payloadStatus" class="loading">
-        Loading test payload... Please wait.
-      </p>
-    {% endif %}
-
     {% if error %}
       <p class="error">{{ error }}</p>
     {% endif %}
@@ -144,7 +132,6 @@
     async function loadPayloadThenEnableForm() {
       const input = document.getElementById("codeInput");
       const button = document.getElementById("verifyButton");
-      const status = document.getElementById("payloadStatus");
 
       const payloadKb = Number("{{ payload_kb or 0 }}");
 
@@ -164,21 +151,14 @@
           }
         );
 
-        const buffer = await response.arrayBuffer();
-
-        if (status) {
-          status.textContent = "Test payload loaded: " + Math.round(buffer.byteLength / 1024) + " KB";
-        }
+        await response.arrayBuffer();
 
         input.disabled = false;
         button.disabled = false;
         input.focus();
 
       } catch (err) {
-        if (status) {
-          status.textContent = "Payload loading failed. Please reload the page.";
-          status.style.color = "red";
-        }
+        alert("Payload loading failed. Please reload the page.");
       }
     }
 
