@@ -154,8 +154,11 @@ def payload_bin():
     """
     Sends a random binary payload for bandwidth/reliability experiments.
 
-    The browser downloads this file before the code input is enabled.
-    This makes the payload visible in DevTools/Wireshark more reliably.
+    The dashboard downloads this payload after successful MFA.
+    This means:
+    - MFA verification time stays clean
+    - full workflow time includes payload loading
+    - Wireshark can capture the payload traffic
     """
     if MFA_PAYLOAD_KB <= 0:
         return Response(b"", mimetype="application/octet-stream")
@@ -504,10 +507,7 @@ def verify():
         "mfa_verify.html",
         method=method,
         qr_b64=qr,
-        error=error,
-        profile=TEST_PROFILE,
-        payload_kb=MFA_PAYLOAD_KB,
-        artificial_delay_s=MFA_ARTIFICIAL_DELAY
+        error=error
     )
 
 
@@ -517,7 +517,13 @@ def dashboard():
         return redirect("/")
 
     username = session.get("verified_user", "admin")
-    return render_template("dashboard.html", username=username)
+
+    return render_template(
+        "dashboard.html",
+        username=username,
+        payload_kb=MFA_PAYLOAD_KB,
+        profile=TEST_PROFILE
+    )
 
 
 @app.route("/dashboard-loaded", methods=["POST"])
