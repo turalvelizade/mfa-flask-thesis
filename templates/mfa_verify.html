@@ -59,12 +59,6 @@
       background: #444;
     }
 
-    button:disabled,
-    input:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
     .error {
       color: red;
       font-size: 13px;
@@ -113,56 +107,17 @@
     <form method="post">
       <label>6-digit code</label>
       <input
-        id="codeInput"
         type="text"
         name="code"
         maxlength="6"
         inputmode="numeric"
         autofocus
         required
-        disabled
       >
-      <button id="verifyButton" type="submit" disabled>Verify</button>
+      <button type="submit">Verify</button>
     </form>
 
     <a href="/mfa">← Choose different method</a>
   </div>
-
-  <script>
-    async function loadPayloadThenEnableForm() {
-      const input = document.getElementById("codeInput");
-      const button = document.getElementById("verifyButton");
-
-      const payloadKb = Number("{{ payload_kb or 0 }}");
-
-      if (payloadKb <= 0) {
-        input.disabled = false;
-        button.disabled = false;
-        input.focus();
-        return;
-      }
-
-      try {
-        const response = await fetch(
-          "/payload.bin?method={{ method }}&profile={{ profile }}&t=" + Date.now(),
-          {
-            method: "GET",
-            cache: "no-store"
-          }
-        );
-
-        await response.arrayBuffer();
-
-        input.disabled = false;
-        button.disabled = false;
-        input.focus();
-
-      } catch (err) {
-        alert("Payload loading failed. Please reload the page.");
-      }
-    }
-
-    window.addEventListener("load", loadPayloadThenEnableForm);
-  </script>
 </body>
 </html>

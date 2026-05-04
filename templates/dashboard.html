@@ -32,6 +32,7 @@
     }
   </style>
 </head>
+
 <body>
   <div class="wrap">
     <h2>Dashboard</h2>
@@ -40,12 +41,33 @@
   </div>
 
   <script>
-    window.addEventListener("load", function () {
+    async function loadPayloadThenLogFullWorkflow() {
+      const payloadKb = Number("{{ payload_kb or 0 }}");
+
+      if (payloadKb > 0) {
+        try {
+          const response = await fetch(
+            "/payload.bin?profile={{ profile }}&t=" + Date.now(),
+            {
+              method: "GET",
+              cache: "no-store"
+            }
+          );
+
+          await response.arrayBuffer();
+
+        } catch (err) {
+          // Even if payload fails, still log workflow completion
+        }
+      }
+
       fetch("/dashboard-loaded", {
         method: "POST",
         keepalive: true
       });
-    });
+    }
+
+    window.addEventListener("load", loadPayloadThenLogFullWorkflow);
   </script>
 </body>
 </html>
