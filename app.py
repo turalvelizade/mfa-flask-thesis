@@ -518,6 +518,30 @@ def dashboard_loaded():
     start = session.get("mfa_start_ts")
     method = session.get("verified_method")
 
+    # ------------------------------------------------------------------
+    # Parse browser-side bandwidth data sent from Performance API.
+    # The dashboard sends JSON with total_transfer_bytes (wire bytes,
+    # HTTP layer, after any compression) and total_decoded_bytes
+    # (decompressed body bytes). Both are in bytes.
+    # transferSize === 0 for cached resources, so cached_count tells us
+    # how many resources were served from cache and not counted.
+    # ------------------------------------------------------------------
+    bw = {}
+    try:
+        body = request.get_json(silent=True) or {}
+        bw = {
+            # Full end-to-end session bytes: login + mfa_select + verify + payload + dashboard
+            "session_total_bytes": body.get("session_total_bytes", "n/a"),
+            "session_total_kb":    body.get("session_total_kb",    "n/a"),
+            # Dashboard page bytes only (sanity check)
+            "dashboard_transfer_bytes": body.get("dashboard_transfer_bytes", "n/a"),
+            "dashboard_transfer_kb":    body.get("dashboard_transfer_kb",    "n/a"),
+            # Per-page breakdown as a compact string for log readability
+            "page_breakdown": str(body.get("page_breakdown", "n/a"))
+        }
+    except Exception:
+        bw = {"browser_bandwidth": "parse_error"}
+
     if start:
         full_workflow_time = round((time.time() - start) * 1000, 2)
 
@@ -526,7 +550,8 @@ def dashboard_loaded():
             method=method,
             result="success",
             mfa_verification_time_ms=session.get("mfa_verification_time_ms"),
-            full_workflow_time_ms=full_workflow_time
+            full_workflow_time_ms=full_workflow_time,
+            **bw
         )
 
         session["dashboard_loaded_logged"] = True
