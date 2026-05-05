@@ -10,7 +10,7 @@ from email.message import EmailMessage
 
 import pyotp
 import qrcode
-from flask import Flask, render_template, request, session, redirect
+from flask import Flask, render_template, request, session, redirect, Response
 from twilio.rest import Client as TwilioClient
 
 
@@ -55,7 +55,7 @@ sms_tracking = {}
 
 
 # ---------------------------
-# Logging and payload helpers
+# Logging helper
 # ---------------------------
 
 def log_event(event_type, method=None, result=None, reason=None, **kwargs):
@@ -76,10 +76,6 @@ def log_event(event_type, method=None, result=None, reason=None, **kwargs):
         parts.append(f"{k}={v}")
 
     print("[MEASUREMENT] " + " | ".join(parts), flush=True)
-
-
-def generate_payload():
-    return "A" * (MFA_PAYLOAD_KB * 1024)
 
 
 # ---------------------------
@@ -473,10 +469,31 @@ def verify():
         method=method,
         qr_b64=qr,
         error=error,
-        payload=generate_payload(),
         profile=TEST_PROFILE,
         payload_kb=MFA_PAYLOAD_KB,
         artificial_delay_s=MFA_ARTIFICIAL_DELAY
+    )
+
+
+@app.route("/payload")
+def payload():
+    """
+    Serves a controlled random-byte payload for bandwidth experiments.
+    Random bytes are incompressible so the full MFA_PAYLOAD_KB is always
+    transmitted over the wire regardless of HTTP compression.
+    Wireshark filter: http.request.uri contains "/payload"
+    """
+    size = MFA_PAYLOAD_KB * 1024
+    data = os.urandom(size)
+    return Response(
+        data,
+        mimetype="application/octet-stream",
+        headers={
+            "Content-Length": str(size),
+            "Cache-Control": "no-store, no-cache",
+            "X-Payload-KB": str(MFA_PAYLOAD_KB),
+            "X-Profile": TEST_PROFILE
+        }
     )
 
 
