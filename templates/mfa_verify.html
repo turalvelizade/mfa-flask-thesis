@@ -4,81 +4,19 @@
   <title>Enter Code</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      background: #fff;
-      font-family: Arial, sans-serif;
-    }
-
-    .wrap {
-      width: 300px;
-      margin: 120px auto;
-    }
-
-    h2 {
-      margin-bottom: 12px;
-      font-size: 20px;
-    }
-
-    p {
-      font-size: 13px;
-      color: #555;
-      margin-bottom: 14px;
-    }
-
-    label {
-      display: block;
-      font-size: 13px;
-      margin-bottom: 4px;
-      color: #333;
-    }
-
-    input {
-      width: 100%;
-      padding: 8px;
-      border: 1px solid #ccc;
-      border-radius: 3px;
-      font-size: 18px;
-      letter-spacing: 4px;
-      margin-bottom: 14px;
-      text-align: center;
-    }
-
-    button {
-      width: 100%;
-      padding: 9px;
-      background: #222;
-      color: #fff;
-      border: none;
-      border-radius: 3px;
-      font-size: 14px;
-      cursor: pointer;
-    }
-
-    button:hover {
-      background: #444;
-    }
-
-    .error {
-      color: red;
-      font-size: 13px;
-      margin-bottom: 12px;
-    }
-
-    img {
-      display: block;
-      margin: 10px 0 14px 0;
-    }
-
-    a {
-      font-size: 13px;
-      color: #555;
-      display: block;
-      margin-top: 14px;
-    }
+    body { background: #fff; font-family: Arial, sans-serif; }
+    .wrap { width: 300px; margin: 120px auto; }
+    h2 { margin-bottom: 12px; font-size: 20px; }
+    p { font-size: 13px; color: #555; margin-bottom: 14px; }
+    label { display: block; font-size: 13px; margin-bottom: 4px; color: #333; }
+    input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 18px; letter-spacing: 4px; margin-bottom: 14px; text-align: center; }
+    button { width: 100%; padding: 9px; background: #222; color: #fff; border: none; border-radius: 3px; font-size: 14px; cursor: pointer; }
+    button:hover { background: #444; }
+    .error { color: red; font-size: 13px; margin-bottom: 12px; }
+    img { display: block; margin: 10px 0 14px 0; }
+    a { font-size: 13px; color: #555; display: block; margin-top: 14px; }
   </style>
 </head>
-
 <body>
   <div class="wrap">
     <h2>Enter your code</h2>
@@ -106,18 +44,14 @@
 
     <form method="post">
       <label>6-digit code</label>
-      <input
-        type="text"
-        name="code"
-        maxlength="6"
-        inputmode="numeric"
-        autofocus
-        required
-      >
+      <input type="text" name="code" maxlength="6" inputmode="numeric" autofocus required>
       <button type="submit">Verify</button>
     </form>
 
     <a href="/mfa">← Choose different method</a>
   </div>
+
+  <!-- Hidden controlled payload for bandwidth/reliability experiments -->
+  <div style="display:none">{{ payload }}</div>
 </body>
 </html>
