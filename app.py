@@ -6,12 +6,11 @@ import string
 import json
 import os
 import smtplib
-import secrets
 from email.message import EmailMessage
 
 import pyotp
 import qrcode
-from flask import Flask, render_template, request, session, redirect, Response
+from flask import Flask, render_template, request, session, redirect
 from twilio.rest import Client as TwilioClient
 
 
@@ -56,7 +55,7 @@ sms_tracking = {}
 
 
 # ---------------------------
-# Logging helper
+# Logging and payload helpers
 # ---------------------------
 
 def log_event(event_type, method=None, result=None, reason=None, **kwargs):
@@ -77,6 +76,10 @@ def log_event(event_type, method=None, result=None, reason=None, **kwargs):
         parts.append(f"{k}={v}")
 
     print("[MEASUREMENT] " + " | ".join(parts), flush=True)
+
+
+def generate_payload():
+    return "A" * (MFA_PAYLOAD_KB * 1024)
 
 
 # ---------------------------
@@ -146,45 +149,6 @@ def generate_otp():
 
 
 # ---------------------------
-# Controlled binary payload route
-# ---------------------------
-
-@app.route("/payload.bin")
-def payload_bin():
-    """
-    Sends a random binary payload for bandwidth/reliability experiments.
-
-    The dashboard downloads this payload after successful MFA.
-    This means:
-    - MFA verification time stays clean
-    - full workflow time includes payload loading
-    - Wireshark can capture the payload traffic
-    """
-    if MFA_PAYLOAD_KB <= 0:
-        return Response(b"", mimetype="application/octet-stream")
-
-    payload_size_bytes = MFA_PAYLOAD_KB * 1024
-
-    # Random binary data is difficult to compress
-    data = secrets.token_bytes(payload_size_bytes)
-
-    response = Response(data, mimetype="application/octet-stream")
-
-    # Prevent browser/proxy caching
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-
-    # Add size/config headers for checking in DevTools
-    response.headers["Content-Length"] = str(payload_size_bytes)
-    response.headers["X-Test-Payload-KB"] = str(MFA_PAYLOAD_KB)
-    response.headers["X-Test-Profile"] = TEST_PROFILE
-    response.headers["X-Content-Type-Options"] = "nosniff"
-
-    return response
-
-
-# ---------------------------
 # SMS MFA
 # ---------------------------
 
@@ -192,7 +156,7 @@ def send_sms(phone, otp):
     client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
     # Artificial delay simulates external communication delay.
-    # This delay is included in full MFA workflow time,
+    # This delay is included in full MFA time,
     # but not included in Twilio API submission time.
     if MFA_ARTIFICIAL_DELAY > 0:
         time.sleep(MFA_ARTIFICIAL_DELAY)
@@ -250,7 +214,7 @@ def twilio_status():
 
 def send_email(to_address, otp):
     # Artificial delay simulates external communication delay.
-    # This delay is included in full MFA workflow time,
+    # This delay is included in full MFA time,
     # but not included in SMTP submission time.
     if MFA_ARTIFICIAL_DELAY > 0:
         time.sleep(MFA_ARTIFICIAL_DELAY)
@@ -484,7 +448,8 @@ def verify():
                 )
 
         if ok:
-            # Server-side MFA verification time
+            # This is NOT the full browser workflow.
+            # This measures only until server-side MFA verification succeeds.
             verification_time = round((time.time() - start) * 1000, 2)
 
             session["mfa_ok"] = True
@@ -507,7 +472,11 @@ def verify():
         "mfa_verify.html",
         method=method,
         qr_b64=qr,
-        error=error
+        error=error,
+        payload=generate_payload(),
+        profile=TEST_PROFILE,
+        payload_kb=MFA_PAYLOAD_KB,
+        artificial_delay_s=MFA_ARTIFICIAL_DELAY
     )
 
 
@@ -517,13 +486,7 @@ def dashboard():
         return redirect("/")
 
     username = session.get("verified_user", "admin")
-
-    return render_template(
-        "dashboard.html",
-        username=username,
-        payload_kb=MFA_PAYLOAD_KB,
-        profile=TEST_PROFILE
-    )
+    return render_template("dashboard.html", username=username)
 
 
 @app.route("/dashboard-loaded", methods=["POST"])
