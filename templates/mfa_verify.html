@@ -52,27 +52,98 @@
   </div>
 
   <!--
-    Controlled payload fetch for bandwidth/reliability experiments.
-    Fetches random bytes from /payload as a separate HTTP request.
-    Random bytes are incompressible so the full payload_kb is always
-    transmitted over the wire regardless of gzip/deflate compression.
-    To isolate in Wireshark use filter: http.request.uri contains "/payload"
+    Jinja values live here as data attributes — NOT inside the script.
+    JS reads them with dataset. This means zero Jinja syntax inside
+    the script block so VS Code's linter has nothing to complain about.
+    Flask still renders the correct values at runtime.
   -->
-  {% if payload_kb > 0 %}
+  <div id="bw-config"
+       data-payload-kb="{{ payload_kb }}"
+       data-profile="{{ profile }}"
+       style="display:none"></div>
+
   <script>
-    fetch("/payload", { cache: "no-store" })
-      .then(function(r) { return r.arrayBuffer(); })
-      .then(function(buf) {
-        console.log(
-          "[PAYLOAD] received " + buf.byteLength + " bytes" +
-          " | profile={{ profile }}" +
-          " | expected={{ payload_kb }}KB"
-        );
-      })
-      .catch(function(err) {
-        console.warn("[PAYLOAD] fetch failed:", err);
+    // ------------------------------------------------------------------
+    // BANDWIDTH MEASUREMENT - STEP 3 of 4 (verify page)
+    //
+    // This is the most important page for bandwidth comparison because:
+    //   - SMS and Email: identical page bytes
+    //   - TOTP with QR shown: extra bytes for the base64 QR image
+    //   - All methods: /payload fetch adds controlled bytes identically
+    //
+    // Page bytes and payload bytes are counted separately so the thesis
+    // can report them independently.
+    // ------------------------------------------------------------------
+    window.addEventListener("load", function () {
+
+      // Read Jinja-injected values from data attributes — no Jinja in JS
+      var cfg        = document.getElementById("bw-config");
+      var PAYLOAD_KB = parseInt(cfg.dataset.payloadKb || "0", 10);
+      var PROFILE    = cfg.dataset.profile || "";
+
+      // -- Page bytes (HTML + any inline assets, excluding /payload) ----
+      var pageBytes = 0;
+      var nav = performance.getEntriesByType("navigation");
+      if (nav.length > 0) pageBytes += (nav[0].transferSize || 0);
+
+      performance.getEntriesByType("resource").forEach(function (e) {
+        if (e.name && e.name.indexOf("/payload") === -1) {
+          pageBytes += (e.transferSize || 0);
+        }
       });
+
+      var prev = parseInt(sessionStorage.getItem("mfa_total_bytes") || "0", 10);
+      var runningTotal = prev + pageBytes;
+      sessionStorage.setItem("mfa_total_bytes", runningTotal.toString());
+
+      try {
+        var log = JSON.parse(sessionStorage.getItem("mfa_page_log") || "[]");
+        log.push({ page: "mfa_verify_page", bytes: pageBytes });
+        sessionStorage.setItem("mfa_page_log", JSON.stringify(log));
+      } catch (e) {}
+
+      console.log("[BW] verify page (excl payload): " + pageBytes + " bytes | running total: " + runningTotal);
+
+      // -- Controlled payload fetch -------------------------------------
+      // Bytes are counted after fetch resolves so Performance API has
+      // had time to record the entry with its real transferSize.
+      if (PAYLOAD_KB > 0) {
+        fetch("/payload", { cache: "no-store" })
+          .then(function (r) { return r.arrayBuffer(); })
+          .then(function (buf) {
+
+            var payloadEntry = performance.getEntriesByType("resource").filter(function (e) {
+              return e.name && e.name.indexOf("/payload") !== -1;
+            }).pop();
+
+            var payloadBytes = payloadEntry ? (payloadEntry.transferSize || buf.byteLength) : buf.byteLength;
+
+            var current = parseInt(sessionStorage.getItem("mfa_total_bytes") || "0", 10);
+            sessionStorage.setItem("mfa_total_bytes", (current + payloadBytes).toString());
+
+            try {
+              var log2 = JSON.parse(sessionStorage.getItem("mfa_page_log") || "[]");
+              log2.push({ page: "payload_fetch", bytes: payloadBytes });
+              sessionStorage.setItem("mfa_page_log", JSON.stringify(log2));
+            } catch (e) {}
+
+            console.log(
+              "[BW] /payload: " + payloadBytes + " bytes" +
+              " | decoded: " + buf.byteLength + " bytes" +
+              " | profile=" + PROFILE +
+              " | expected=" + PAYLOAD_KB + "KB"
+            );
+          })
+          .catch(function (err) {
+            console.warn("[BW] /payload fetch failed:", err);
+            try {
+              var log3 = JSON.parse(sessionStorage.getItem("mfa_page_log") || "[]");
+              log3.push({ page: "payload_fetch", bytes: 0, error: err.toString() });
+              sessionStorage.setItem("mfa_page_log", JSON.stringify(log3));
+            } catch (e) {}
+          });
+      }
+    });
   </script>
-  {% endif %}
 </body>
 </html>
