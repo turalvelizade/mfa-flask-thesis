@@ -3,68 +3,37 @@
 <head>
   <title>Login</title>
   <style>
+    /* reset all default spacing and used border-box sizing across every element */
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    /* set a white background and a clean sans-serif font for the whole page */
     body { background: #fff; font-family: Arial, sans-serif; }
+    /* centered the content block and pushed it down from the top with a fixed margin */
     .wrap { width: 300px; margin: 120px auto; }
     h2 { margin-bottom: 24px; font-size: 20px; }
+    /* styled labels as block elements so they stack above their inputs */
     label { display: block; font-size: 13px; margin-bottom: 4px; color: #333; }
+    /* made inputs full-width with consistent padding and a subtle border */
     input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 14px; margin-bottom: 14px; }
+    /* styled the submit button dark with a hover state to indicate interactivity */
     button { width: 100%; padding: 9px; background: #222; color: #fff; border: none; border-radius: 3px; font-size: 14px; cursor: pointer; }
     button:hover { background: #444; }
+    /* displayed error messages in red below the heading */
     .error { color: red; font-size: 13px; margin-bottom: 12px; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h2>Login</h2>
+    <!-- showed the error message passed from the Flask route if credentials were wrong -->
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     <form method="post">
       <label>Username</label>
+      <!-- autofocused the username field so the user can start typing immediately -->
       <input type="text" name="username" autofocus required>
       <label>Password</label>
       <input type="password" name="password" required>
       <button type="submit">Login</button>
     </form>
   </div>
-
-  <script>
-    // ------------------------------------------------------------------
-    // BANDWIDTH MEASUREMENT - STEP 1 of 4 (login page)
-    //
-    // This is the START of the authentication session.
-    // We reset any previous accumulated bandwidth data in sessionStorage
-    // so each new login attempt starts with a clean measurement.
-    // Then we measure bytes transferred to load THIS page and store them.
-    //
-    // sessionStorage persists across page navigations within the same
-    // browser tab, but is wiped when the tab is closed or a new login
-    // starts. This makes it perfect for accumulating per-session totals.
-    // ------------------------------------------------------------------
-    window.addEventListener("load", function () {
-
-      // Reset accumulator at the start of every new login attempt
-      sessionStorage.setItem("mfa_total_bytes", "0");
-      sessionStorage.setItem("mfa_page_log", "[]");
-
-      var pageBytes = 0;
-
-      // Navigation entry = the main HTML document for this page
-      var nav = performance.getEntriesByType("navigation");
-      if (nav.length > 0) pageBytes += (nav[0].transferSize || 0);
-
-      // Resource entries = CSS, JS, images, fonts etc loaded by this page
-      performance.getEntriesByType("resource").forEach(function (e) {
-        pageBytes += (e.transferSize || 0);
-      });
-
-      sessionStorage.setItem("mfa_total_bytes", pageBytes.toString());
-
-      // Keep a human-readable per-page log for debugging
-      var log = [{ page: "login", bytes: pageBytes }];
-      sessionStorage.setItem("mfa_page_log", JSON.stringify(log));
-
-      console.log("[BW] login page: " + pageBytes + " bytes");
-    });
-  </script>
 </body>
 </html>

@@ -46,70 +46,11 @@
   </div>
 
   <script>
-    // ------------------------------------------------------------------
-    // BANDWIDTH MEASUREMENT - STEP 4 of 4 (dashboard = end of workflow)
-    //
-    // At this point the full authentication session is complete.
-    // We now:
-    //   1. Measure this dashboard page's own bytes
-    //   2. Add them to the running total from sessionStorage
-    //      (which already has login + mfa_select + verify + payload bytes)
-    //   3. Send the complete picture to /dashboard-loaded for server logging
-    //   4. Clear sessionStorage so the next login starts fresh
-    //
-    // What the server will log:
-    //   - session_total_transfer_bytes: every byte transferred from login
-    //     page load all the way through dashboard load, across all 4 pages
-    //   - breakdown by page so you can see which step costs the most
-    //   - dashboard_transfer_bytes: just this final page, separately
-    //
-    // This gives you a genuine end-to-end bandwidth measurement per
-    // authentication session, comparable across SMS / Email / TOTP.
-    // ------------------------------------------------------------------
     window.addEventListener("load", function () {
-
-      // Step 1: measure dashboard page itself
-      var dashBytes = 0;
-      var nav = performance.getEntriesByType("navigation");
-      if (nav.length > 0) dashBytes += (nav[0].transferSize || 0);
-
-      performance.getEntriesByType("resource").forEach(function (e) {
-        if (e.name && e.name.indexOf("/dashboard-loaded") !== -1) return;
-        dashBytes += (e.transferSize || 0);
-      });
-
-      // Step 2: read accumulated total from previous pages
-      var prevTotal = parseInt(sessionStorage.getItem("mfa_total_bytes") || "0", 10);
-      var sessionTotal = prevTotal + dashBytes;
-
-      // Step 3: read the per-page breakdown log
-      var pageLog = [];
-      try {
-        pageLog = JSON.parse(sessionStorage.getItem("mfa_page_log") || "[]");
-        pageLog.push({ page: "dashboard", bytes: dashBytes });
-      } catch (e) {}
-
-      console.log("[BW] dashboard page: " + dashBytes + " bytes");
-      console.log("[BW] SESSION TOTAL: " + sessionTotal + " bytes (" + (sessionTotal / 1024).toFixed(2) + " KB)");
-      console.log("[BW] breakdown:", pageLog);
-
-      // Step 4: send everything to server
       fetch("/dashboard-loaded", {
         method: "POST",
-        keepalive: true,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_total_bytes:      sessionTotal,
-          session_total_kb:         parseFloat((sessionTotal / 1024).toFixed(2)),
-          dashboard_transfer_bytes: dashBytes,
-          dashboard_transfer_kb:    parseFloat((dashBytes / 1024).toFixed(2)),
-          page_breakdown:           pageLog
-        })
+        keepalive: true
       });
-
-      // Step 5: clean up sessionStorage for next login
-      sessionStorage.removeItem("mfa_total_bytes");
-      sessionStorage.removeItem("mfa_page_log");
     });
   </script>
 </body>
