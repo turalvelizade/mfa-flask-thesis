@@ -51,17 +51,6 @@
         method: "POST",
         keepalive: true
       });
-
-      // Silently download the controlled payload in the background.
-      // Stay on this page until Wireshark traffic stops, then stop capture.
-      fetch("/payload", { cache: "no-store" })
-        .then(function (r) { return r.arrayBuffer(); })
-        .then(function (buf) {
-          console.log("[PAYLOAD] done: " + buf.byteLength + " bytes");
-        })
-        .catch(function (err) {
-          console.warn("[PAYLOAD] error:", err);
-        });
     });
   </script>
 </body>
