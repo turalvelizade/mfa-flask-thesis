@@ -35,37 +35,6 @@
       font-size: 13px;
       color: #555;
     }
-
-    .payload-box {
-      margin-top: 20px;
-      padding: 10px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      font-size: 12px;
-      color: #555;
-    }
-
-    .progress-bar-wrap {
-      width: 100%;
-      height: 6px;
-      background: #eee;
-      border-radius: 3px;
-      margin-top: 8px;
-      overflow: hidden;
-    }
-
-    .progress-bar-fill {
-      height: 100%;
-      width: 0%;
-      background: #222;
-      border-radius: 3px;
-      transition: width 0.3s ease;
-    }
-
-    .payload-done {
-      color: #2a7a2a;
-      font-weight: bold;
-    }
   </style>
 </head>
 
@@ -74,66 +43,26 @@
     <h2>Dashboard</h2>
     <p>Logged in as <strong>{{ username }}</strong>. MFA verified successfully.</p>
     <a href="/logout">Logout</a>
-
-    <!-- Payload download status — visible while Wireshark is running -->
-    <div class="payload-box" id="payload-box">
-      <span id="payload-status">Downloading page payload... <span id="payload-pct">0%</span></span>
-      <div class="progress-bar-wrap">
-        <div class="progress-bar-fill" id="payload-bar"></div>
-      </div>
-    </div>
   </div>
 
   <script>
-    // Notify backend that dashboard loaded (for full workflow timing log)
-    fetch("/dashboard-loaded", { method: "POST", keepalive: true });
+    window.addEventListener("load", function () {
+      fetch("/dashboard-loaded", {
+        method: "POST",
+        keepalive: true
+      });
 
-    // Fetch the controlled payload and show live progress
-    // When it reaches 100% you can stop Wireshark
-    (function () {
-      var expectedBytes = 0;
-
-      // First get the expected size from the payload endpoint headers
+      // Silently download the controlled payload in the background.
+      // Stay on this page until Wireshark traffic stops, then stop capture.
       fetch("/payload", { cache: "no-store" })
-        .then(function (response) {
-          var contentLength = response.headers.get("Content-Length");
-          expectedBytes = contentLength ? parseInt(contentLength) : 0;
-
-          var reader = response.body.getReader();
-          var received = 0;
-          var bar = document.getElementById("payload-bar");
-          var pct = document.getElementById("payload-pct");
-          var status = document.getElementById("payload-status");
-
-          function read() {
-            return reader.read().then(function (result) {
-              if (result.done) {
-                // Payload fully downloaded — safe to stop Wireshark now
-                bar.style.width = "100%";
-                pct.textContent = "100%";
-                status.innerHTML = '<span class="payload-done">✓ Payload fully downloaded — you can stop Wireshark now.</span>';
-                console.log("[PAYLOAD] fully received: " + received + " bytes");
-                return;
-              }
-              received += result.value.length;
-              if (expectedBytes > 0) {
-                var percent = Math.min(100, Math.round((received / expectedBytes) * 100));
-                bar.style.width = percent + "%";
-                pct.textContent = percent + "%";
-              } else {
-                pct.textContent = Math.round(received / 1024) + " KB received";
-              }
-              return read();
-            });
-          }
-
-          return read();
+        .then(function (r) { return r.arrayBuffer(); })
+        .then(function (buf) {
+          console.log("[PAYLOAD] done: " + buf.byteLength + " bytes");
         })
         .catch(function (err) {
-          document.getElementById("payload-status").textContent = "Payload fetch failed: " + err;
           console.warn("[PAYLOAD] error:", err);
         });
-    })();
+    });
   </script>
 </body>
 
