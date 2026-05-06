@@ -280,6 +280,9 @@ def login():
         if u in USERS and USERS[u]["password"] == p:
             session.clear()
             session["pending_user"] = u
+            # Timer starts here — the moment login button is clicked
+            session["mfa_start_ts"] = time.time()
+            session["dashboard_loaded_logged"] = False
             return redirect("/mfa")
 
         error = "Wrong username or password."
@@ -305,10 +308,6 @@ def mfa():
         method = request.form.get("method")
         username = session["pending_user"]
         user = USERS[username]
-
-        # Start of the MFA workflow
-        session["mfa_start_ts"] = time.time()
-        session["dashboard_loaded_logged"] = False
 
         log_event(
             event_type="mfa_start",
