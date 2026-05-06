@@ -50,29 +50,5 @@
 
     <a href="/mfa">← Choose different method</a>
   </div>
-
-  <!--
-    Controlled payload fetch for bandwidth/reliability experiments.
-    Fetches random bytes from /payload as a separate HTTP request.
-    Random bytes are incompressible so the full payload_kb is always
-    transmitted over the wire regardless of gzip/deflate compression.
-    To isolate in Wireshark use filter: http.request.uri contains "/payload"
-  -->
-  {% if payload_kb > 0 %}
-  <script>
-    fetch("/payload", { cache: "no-store" })
-      .then(function(r) { return r.arrayBuffer(); })
-      .then(function(buf) {
-        console.log(
-          "[PAYLOAD] received " + buf.byteLength + " bytes" +
-          " | profile={{ profile }}" +
-          " | expected={{ payload_kb }}KB"
-        );
-      })
-      .catch(function(err) {
-        console.warn("[PAYLOAD] fetch failed:", err);
-      });
-  </script>
-  {% endif %}
 </body>
 </html>
